@@ -1,0 +1,46 @@
+version: '3'
+
+tasks:
+  dev:
+    desc: Start local development stack (TimescaleDB, Redis, NATS, Mailpit, MinIO)
+    cmds:
+      - docker compose -f deploy/compose/docker-compose.yml up -d
+      - go run cmd/iotp-lite/main.go
+
+  dev:infra:
+    desc: Start only the infrastructure dependencies in Docker Compose
+    cmds:
+      - docker compose -f deploy/compose/docker-compose.yml up -d
+
+  down:
+    desc: Stop all local containers
+    cmds:
+      - docker compose -f deploy/compose/docker-compose.yml down
+
+  test:
+    desc: Run all Go unit and package tests
+    cmds:
+      - go test -v ./pkg/... ./cmd/...
+
+  lint:
+    desc: Run Go code verification and vet
+    cmds:
+      - go vet ./...
+
+  build:
+    desc: Build all binaries under cmd/
+    cmds:
+      - go build -o bin/iotp-lite ./cmd/iotp-lite
+      - go build -o bin/iotpctl ./cmd/iotpctl
+      - go build -o bin/apigw ./cmd/apigw
+      - go build -o bin/identity ./cmd/identity
+      - go build -o bin/core ./cmd/core
+      - go build -o bin/devreg ./cmd/devreg
+      - go build -o bin/telemetry ./cmd/telemetry
+      - go build -o bin/tr-mqtt ./cmd/tr-mqtt
+      - go build -o bin/tr-http ./cmd/tr-http
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - git clean -fdX bin/

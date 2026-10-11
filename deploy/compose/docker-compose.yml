@@ -1,0 +1,60 @@
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: iotp-timescaledb
+    environment:
+      POSTGRES_DB: iotp
+      POSTGRES_USER: iotp
+      POSTGRES_PASSWORD: iotp_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - iotp_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U iotp -d iotp"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: iotp-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: iotp-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: iotp-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  minio:
+    image: minio/minio:latest
+    container_name: iotp-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - iotp_miniodata:/data
+
+volumes:
+  iotp_pgdata:
+  iotp_miniodata:
