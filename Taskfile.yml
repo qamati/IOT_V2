@@ -20,7 +20,7 @@ tasks:
   test:
     desc: Run all Go unit and package tests
     cmds:
-      - go test -v ./pkg/... ./cmd/...
+      - go test -v ./pkg/... ./internal/... ./cmd/...
 
   lint:
     desc: Run Go code verification and vet
@@ -39,6 +39,23 @@ tasks:
       - go build -o bin/telemetry ./cmd/telemetry
       - go build -o bin/tr-mqtt ./cmd/tr-mqtt
       - go build -o bin/tr-http ./cmd/tr-http
+
+  web:build:
+    desc: Build Web Console SPA
+    dir: web/apps/console
+    cmds:
+      - pnpm run build
+
+  web:dev:
+    desc: Run Web Console Vite dev server with proxy
+    dir: web/apps/console
+    cmds:
+      - pnpm run dev
+
+  smoke:
+    desc: Run automated platform integration test
+    cmds:
+      - powershell -File tools/test_features.ps1
 
   clean:
     desc: Clean build artifacts

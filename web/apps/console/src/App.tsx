@@ -1,0 +1,1498 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Cpu, 
+  Activity, 
+  Layers, 
+  Plus, 
+  Trash2, 
+  RefreshCw, 
+  Copy, 
+  Check, 
+  Radio, 
+  Sliders, 
+  LogOut, 
+  Server, 
+  Terminal, 
+  ShieldCheck, 
+  ChevronRight, 
+  Send, 
+  Play, 
+  Square, 
+  TrendingUp, 
+  Clock, 
+  Sparkles,
+  AlertTriangle,
+  Bell,
+  CheckCircle,
+  XCircle,
+  Tag
+} from 'lucide-react';
+import { api } from './api';
+import type { Device, User, TelemetryMap, AttributeKv, Alarm, DeviceActivity } from './api';
+
+export default function App() {
+  const [token, setToken] = useState<string | null>(api.getToken());
+  const [user, setUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('iotp_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  // Navigation: overview, devices, device-detail, alarms, system
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'alarms' | 'system'>('devices');
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [deviceDetailSubTab, setDeviceDetailSubTab] = useState<'telemetry' | 'attributes'>('telemetry');
+
+  // Login form
+  const [email, setEmail] = useState('tenant@example.com');
+  const [password, setPassword] = useState('Secret123!');
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  // Devices state
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [devicesLoading, setDevicesLoading] = useState(false);
+  const [deviceTokens, setDeviceTokens] = useState<Record<string, string>>({});
+  const [deviceActivities, setDeviceActivities] = useState<Record<string, DeviceActivity>>({});
+  const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  // New device modal
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newDeviceName, setNewDeviceName] = useState('');
+  const [newDeviceLabel, setNewDeviceLabel] = useState('');
+  const [newDeviceToken, setNewDeviceToken] = useState('');
+  const [createLoading, setCreateLoading] = useState(false);
+
+  // Device Detail & Telemetry State
+  const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  const [latestTelemetry, setLatestTelemetry] = useState<TelemetryMap>({});
+  const [timeseriesData, setTimeseriesData] = useState<TelemetryMap>({});
+  const [autoRefresh, setAutoRefresh] = useState(true);
+
+  // Attributes State
+  const [attributes, setAttributes] = useState<AttributeKv[]>([]);
+  const [newAttrScope, setNewAttrScope] = useState<'SERVER_SCOPE' | 'SHARED_SCOPE'>('SERVER_SCOPE');
+  const [newAttrKey, setNewAttrKey] = useState('');
+  const [newAttrVal, setNewAttrVal] = useState('');
+
+  // Alarms State
+  const [alarms, setAlarms] = useState<Alarm[]>([]);
+  const [alarmsLoading, setAlarmsLoading] = useState(false);
+
+  // Simulator State
+  const [simTemp, setSimTemp] = useState(24.5);
+  const [simHumidity, setSimHumidity] = useState(55);
+  const [simVoltage, setSimVoltage] = useState(3.7);
+  const [simBattery, setSimBattery] = useState(88);
+  const [isSimulating, setIsSimulating] = useState(false);
+  const [simLog, setSimLog] = useState<string[]>([]);
+  const simIntervalRef = useRef<any>(null);
+
+  // Check login
+  const handleLogin = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setLoginLoading(true);
+    setLoginError('');
+    try {
+      const res = await api.login(email, password);
+      setToken(res.token);
+      setUser(res.user);
+      localStorage.setItem('iotp_user', JSON.stringify(res.user));
+    } catch (err: any) {
+      setLoginError(err.message || 'Login failed');
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const handleLogout = () => {
+    api.logout();
+    localStorage.removeItem('iotp_user');
+    setToken(null);
+    setUser(null);
+    setSelectedDeviceId(null);
+    setSelectedDevice(null);
+  };
+
+  // Fetch devices & alarms
+  const loadDevices = async () => {
+    if (!token) return;
+    setDevicesLoading(true);
+    try {
+      const res = await api.listDevices(1, 100);
+      setDevices(res.data || []);
+      for (const dev of res.data || []) {
+        api.getCredentials(dev.id).then(creds => {
+          setDeviceTokens(prev => ({ ...prev, [dev.id]: creds.credentials_id }));
+        }).catch(() => {});
+        api.getDeviceActivity(dev.id).then(act => {
+          setDeviceActivities(prev => ({ ...prev, [dev.id]: act }));
+        }).catch(() => {});
+      }
+    } catch (err) {
+      console.error('Failed to load devices:', err);
+    } finally {
+      setDevicesLoading(false);
+    }
+  };
+
+  const loadAlarms = async () => {
+    if (!token) return;
+    setAlarmsLoading(true);
+    try {
+      const res = await api.listAlarms(1, 50);
+      setAlarms(res.data || []);
+    } catch (err) {
+      console.error('Failed to load alarms:', err);
+    } finally {
+      setAlarmsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (token) {
+      loadDevices();
+      loadAlarms();
+      const interval = setInterval(loadAlarms, 5000);
+      return () => clearInterval(interval);
+    }
+  }, [token]);
+
+  // Load selected device details, telemetry, and attributes
+  const loadDeviceData = async (devId: string) => {
+    try {
+      const dev = await api.getDevice(devId);
+      setSelectedDevice(dev);
+
+      // Latest telemetry
+      const latest = await api.getLatestTelemetry(devId);
+      setLatestTelemetry(latest || {});
+
+      // Timeseries (last 2 hours)
+      const now = Date.now();
+      const start = now - 2 * 60 * 60 * 1000;
+      const ts = await api.getTimeseries(devId, undefined, start, now, 100);
+      setTimeseriesData(ts || {});
+
+      // Attributes
+      const attrs = await api.getAllAttributes(devId);
+      setAttributes(attrs || []);
+
+      // Activity
+      const act = await api.getDeviceActivity(devId);
+      setDeviceActivities(prev => ({ ...prev, [devId]: act }));
+    } catch (err) {
+      console.error('Error loading device telemetry:', err);
+    }
+  };
+
+  // Poll device data when on detail page
+  useEffect(() => {
+    if (activeTab === 'device-detail' && selectedDeviceId) {
+      loadDeviceData(selectedDeviceId);
+
+      if (autoRefresh) {
+        const interval = setInterval(() => {
+          loadDeviceData(selectedDeviceId);
+        }, 2000);
+        return () => clearInterval(interval);
+      }
+    }
+  }, [activeTab, selectedDeviceId, autoRefresh]);
+
+  // Simulator streamer
+  useEffect(() => {
+    if (isSimulating && selectedDeviceId) {
+      const devToken = deviceTokens[selectedDeviceId];
+      if (!devToken) return;
+
+      simIntervalRef.current = setInterval(async () => {
+        const newTemp = +(simTemp + (Math.random() * 0.8 - 0.4)).toFixed(1);
+        const newHum = Math.min(100, Math.max(10, +(simHumidity + (Math.random() * 1.2 - 0.6)).toFixed(1)));
+        const newVolt = +(simVoltage + (Math.random() * 0.04 - 0.02)).toFixed(2);
+        const newBat = Math.max(0, +(simBattery - 0.05).toFixed(1));
+
+        setSimTemp(newTemp);
+        setSimHumidity(newHum);
+        setSimVoltage(newVolt);
+        setSimBattery(newBat);
+
+        const payload = {
+          temperature: newTemp,
+          humidity: newHum,
+          voltage: newVolt,
+          battery: newBat,
+          status: 'ONLINE',
+        };
+
+        try {
+          await api.uploadTelemetry(devToken, payload);
+          setSimLog(prev => [
+            `[${new Date().toLocaleTimeString()}] Sent ${JSON.stringify(payload)}`,
+            ...prev.slice(0, 15)
+          ]);
+          loadDeviceData(selectedDeviceId);
+          loadAlarms();
+        } catch (e: any) {
+          setSimLog(prev => [`[${new Date().toLocaleTimeString()}] Error: ${e.message}`, ...prev.slice(0, 15)]);
+        }
+      }, 2000);
+
+      return () => {
+        if (simIntervalRef.current) clearInterval(simIntervalRef.current);
+      };
+    } else {
+      if (simIntervalRef.current) clearInterval(simIntervalRef.current);
+    }
+  }, [isSimulating, selectedDeviceId, deviceTokens, simTemp, simHumidity, simVoltage, simBattery]);
+
+  const sendSingleSimulation = async () => {
+    if (!selectedDeviceId) return;
+    const devToken = deviceTokens[selectedDeviceId];
+    if (!devToken) return;
+
+    const payload = {
+      temperature: simTemp,
+      humidity: simHumidity,
+      voltage: simVoltage,
+      battery: simBattery,
+      status: 'ONLINE',
+    };
+
+    try {
+      await api.uploadTelemetry(devToken, payload);
+      setSimLog(prev => [
+        `[${new Date().toLocaleTimeString()}] Manual: ${JSON.stringify(payload)}`,
+        ...prev.slice(0, 15)
+      ]);
+      loadDeviceData(selectedDeviceId);
+      loadAlarms();
+    } catch (e: any) {
+      alert('Upload failed: ' + e.message);
+    }
+  };
+
+  const handleSaveAttribute = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedDeviceId || !newAttrKey.trim()) return;
+    try {
+      let parsedVal: any = newAttrVal;
+      try {
+        parsedVal = JSON.parse(newAttrVal);
+      } catch {
+        // use string if not valid JSON
+      }
+      await api.saveScopedAttributes(selectedDeviceId, newAttrScope, { [newAttrKey.trim()]: parsedVal });
+      setNewAttrKey('');
+      setNewAttrVal('');
+      const attrs = await api.getAllAttributes(selectedDeviceId);
+      setAttributes(attrs || []);
+    } catch (err: any) {
+      alert('Failed to save attribute: ' + err.message);
+    }
+  };
+
+  const handleDeleteAttribute = async (scope: any, key: string) => {
+    if (!selectedDeviceId) return;
+    try {
+      await api.deleteScopedAttributes(selectedDeviceId, scope, [key]);
+      const attrs = await api.getAllAttributes(selectedDeviceId);
+      setAttributes(attrs || []);
+    } catch (err: any) {
+      alert('Failed to delete attribute: ' + err.message);
+    }
+  };
+
+  const handleAckAlarm = async (id: string) => {
+    try {
+      await api.ackAlarm(id);
+      loadAlarms();
+    } catch (err: any) {
+      alert('Failed to acknowledge alarm: ' + err.message);
+    }
+  };
+
+  const handleClearAlarm = async (id: string) => {
+    try {
+      await api.clearAlarm(id);
+      loadAlarms();
+    } catch (err: any) {
+      alert('Failed to clear alarm: ' + err.message);
+    }
+  };
+
+  const handleCreateDevice = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDeviceName.trim()) return;
+    setCreateLoading(true);
+    try {
+      const generatedToken = newDeviceToken.trim() || `DEV_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+      const res = await api.createDevice(newDeviceName.trim(), newDeviceLabel.trim(), generatedToken);
+      setDeviceTokens(prev => ({ ...prev, [res.device.id]: res.credentials.credentials_id }));
+      setShowCreateModal(false);
+      setNewDeviceName('');
+      setNewDeviceLabel('');
+      setNewDeviceToken('');
+      await loadDevices();
+      setSelectedDeviceId(res.device.id);
+      setActiveTab('device-detail');
+    } catch (err: any) {
+      alert('Failed to create device: ' + err.message);
+    } finally {
+      setCreateLoading(false);
+    }
+  };
+
+  const handleDeleteDevice = async (id: string) => {
+    if (!confirm('Are you sure you want to delete this device? Telemetry history will be removed.')) return;
+    try {
+      await api.deleteDevice(id);
+      if (selectedDeviceId === id) {
+        setSelectedDeviceId(null);
+        setSelectedDevice(null);
+        setActiveTab('devices');
+      }
+      loadDevices();
+    } catch (err: any) {
+      alert('Delete failed: ' + err.message);
+    }
+  };
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedToken(id);
+    setTimeout(() => setCopiedToken(null), 2000);
+  };
+
+  // Render SVG Chart for temperature
+  const chartPoints = useMemo(() => {
+    const list = timeseriesData['temperature'] || [];
+    if (!list || list.length === 0) return null;
+    const sorted = [...list].sort((a, b) => a.ts - b.ts);
+    const minVal = Math.min(...sorted.map(s => Number(s.value))) - 1;
+    const maxVal = Math.max(...sorted.map(s => Number(s.value))) + 1;
+    const range = maxVal - minVal || 1;
+
+    const width = 800;
+    const height = 180;
+    const padding = 20;
+
+    const pts = sorted.map((pt, i) => {
+      const x = padding + (i / Math.max(1, sorted.length - 1)) * (width - 2 * padding);
+      const val = Number(pt.value);
+      const y = height - padding - ((val - minVal) / range) * (height - 2 * padding);
+      return { x, y, val, ts: pt.ts };
+    });
+
+    const pathD = pts.reduce((acc, p, i) => {
+      return i === 0 ? `M ${p.x} ${p.y}` : `${acc} L ${p.x} ${p.y}`;
+    }, '');
+
+    const areaD = pts.length > 0 
+      ? `${pathD} L ${pts[pts.length - 1].x} ${height - padding} L ${pts[0].x} ${height - padding} Z`
+      : '';
+
+    return { pts, pathD, areaD, minVal, maxVal, width, height };
+  }, [timeseriesData]);
+
+  const activeAlarmCount = alarms.filter(a => a.status === 'ACTIVE_UNACK' || a.status === 'ACTIVE_ACK').length;
+
+  // If not logged in, render login screen
+  if (!token) {
+    return (
+      <div className="login-screen">
+        <div className="login-card">
+          <div className="login-brand">
+            <div className="logo-badge">
+              <Cpu size={28} />
+            </div>
+            <div>
+              <h1 style={{ fontSize: '1.5rem', fontWeight: 800, letterSpacing: '-0.02em', color: '#fff' }}>IOTP CONSOLE</h1>
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                Next-Gen ThingsBoard-Class IoT Platform
+              </p>
+            </div>
+          </div>
+
+          {loginError && (
+            <div style={{
+              background: 'rgba(244, 63, 94, 0.15)',
+              border: '1px solid rgba(244, 63, 94, 0.3)',
+              color: 'var(--accent-rose)',
+              padding: '12px 16px',
+              borderRadius: 'var(--radius-md)',
+              fontSize: '0.85rem'
+            }}>
+              {loginError}
+            </div>
+          )}
+
+          <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Email Address</label>
+              <input 
+                type="email" 
+                className="form-input" 
+                value={email} 
+                onChange={e => setEmail(e.target.value)} 
+                required 
+              />
+            </div>
+            <div className="form-group" style={{ margin: 0 }}>
+              <label className="form-label">Password</label>
+              <input 
+                type="password" 
+                className="form-input" 
+                value={password} 
+                onChange={e => setPassword(e.target.value)} 
+                required 
+              />
+            </div>
+
+            <button type="submit" className="btn btn-primary" style={{ padding: '12px', marginTop: '8px' }} disabled={loginLoading}>
+              {loginLoading ? <RefreshCw className="animate-spin" size={18} /> : <ShieldCheck size={18} />}
+              {loginLoading ? 'Authenticating...' : 'Sign In to Console'}
+            </button>
+
+            <button 
+              type="button" 
+              className="btn btn-secondary" 
+              style={{ fontSize: '0.8rem' }}
+              onClick={() => {
+                setEmail('tenant@example.com');
+                setPassword('Secret123!');
+              }}
+            >
+              <Sparkles size={14} style={{ color: 'var(--accent-cyan)' }} />
+              Fill Demo Credentials (Acme Tenant)
+            </button>
+          </form>
+
+          <div style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+            High-Performance Go 1.24+ Monorepo · UUIDv7 · Mochi-MQTT v2 · Multi-Tenant
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="app-container">
+      {/* Sidebar Navigation */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div className="logo-badge">
+            <Cpu size={20} />
+          </div>
+          <div className="logo-text">
+            <h1>IOTP CORE</h1>
+            <span>Enterprise v2</span>
+          </div>
+        </div>
+
+        <ul className="nav-links">
+          <li 
+            className={`nav-item ${activeTab === 'dashboard' ? 'active' : ''}`}
+            onClick={() => setActiveTab('dashboard')}
+          >
+            <Activity size={18} />
+            <span>Overview</span>
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'devices' || activeTab === 'device-detail' ? 'active' : ''}`}
+            onClick={() => setActiveTab('devices')}
+          >
+            <Layers size={18} />
+            <span>Devices Fleet</span>
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'alarms' ? 'active' : ''}`}
+            onClick={() => setActiveTab('alarms')}
+            style={{ position: 'relative' }}
+          >
+            <Bell size={18} />
+            <span>Alarms</span>
+            {activeAlarmCount > 0 && (
+              <span style={{
+                marginLeft: 'auto',
+                background: 'var(--accent-rose)',
+                color: '#fff',
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                padding: '2px 6px',
+                borderRadius: '9999px'
+              }}>
+                {activeAlarmCount}
+              </span>
+            )}
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'system' ? 'active' : ''}`}
+            onClick={() => setActiveTab('system')}
+          >
+            <Server size={18} />
+            <span>System Health</span>
+          </li>
+        </ul>
+
+        <div className="sidebar-footer">
+          <div className="user-profile">
+            <div className="avatar">
+              {user?.email?.charAt(0).toUpperCase() || 'A'}
+            </div>
+            <div className="user-meta">
+              <div className="name">{user?.email || 'Acme Tenant'}</div>
+              <div className="role">TENANT_ADMIN</div>
+            </div>
+            <button 
+              onClick={handleLogout} 
+              className="btn btn-secondary btn-sm"
+              title="Sign Out"
+              style={{ padding: '6px' }}
+            >
+              <LogOut size={15} />
+            </button>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main Content Area */}
+      <main className="main-content">
+        {/* Top Header Bar */}
+        <header className="topbar">
+          <div className="topbar-left">
+            <div className="tenant-pill">
+              <span className="indicator"></span>
+              <span>Acme Corp Primary Tenant</span>
+            </div>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+              ID: {user?.tenant_id ? `${user.tenant_id.substring(0, 8)}...` : '0192d4bf'}
+            </span>
+          </div>
+
+          <div className="topbar-right">
+            {activeAlarmCount > 0 && (
+              <div 
+                className="badge-tag" 
+                style={{ background: 'rgba(244, 63, 94, 0.2)', color: 'var(--accent-rose)', border: '1px solid rgba(244, 63, 94, 0.4)', cursor: 'pointer' }}
+                onClick={() => setActiveTab('alarms')}
+              >
+                <AlertTriangle size={14} />
+                {activeAlarmCount} Active Alert{activeAlarmCount > 1 ? 's' : ''}
+              </div>
+            )}
+            <div className="badge-tag live">
+              MQTT :1883 Active
+            </div>
+            <div className="badge-tag live">
+              HTTP REST :8080
+            </div>
+          </div>
+        </header>
+
+        {/* Page Content View */}
+        <div className="page-body">
+          {/* TAB 1: OVERVIEW DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <>
+              <div className="page-header">
+                <div>
+                  <h2 className="page-title">Operations Overview</h2>
+                  <p className="page-subtitle">Real-time status of telemetry ingestion, rule engine, and device fleet</p>
+                </div>
+                <button className="btn btn-primary" onClick={() => { setActiveTab('devices'); setShowCreateModal(true); }}>
+                  <Plus size={16} />
+                  <span>Register Device</span>
+                </button>
+              </div>
+
+              {/* Stats Grid */}
+              <div className="stats-grid">
+                <div className="stat-card">
+                  <div className="stat-icon" style={{ background: 'rgba(6, 182, 212, 0.15)', color: 'var(--accent-cyan)' }}>
+                    <Layers size={24} />
+                  </div>
+                  <div className="stat-meta">
+                    <div className="label">Managed Devices</div>
+                    <div className="value">{devices.length}</div>
+                    <div className="delta">Fleet Inventory</div>
+                  </div>
+                </div>
+
+                <div className="stat-card">
+                  <div className="stat-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-emerald)' }}>
+                    <Activity size={24} />
+                  </div>
+                  <div className="stat-meta">
+                    <div className="label">Rule Engine</div>
+                    <div className="value">Active</div>
+                    <div className="delta">Realtime Threshold Alerts</div>
+                  </div>
+                </div>
+
+                <div className="stat-card">
+                  <div className="stat-icon" style={{ background: 'rgba(244, 63, 94, 0.15)', color: 'var(--accent-rose)' }}>
+                    <Bell size={24} />
+                  </div>
+                  <div className="stat-meta">
+                    <div className="label">Active Alarms</div>
+                    <div className="value">{activeAlarmCount}</div>
+                    <div className="delta" style={{ color: activeAlarmCount > 0 ? 'var(--accent-rose)' : 'var(--accent-emerald)' }}>
+                      {activeAlarmCount === 0 ? 'All systems nominal' : 'Attention required'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="stat-card">
+                  <div className="stat-icon" style={{ background: 'rgba(245, 158, 11, 0.15)', color: 'var(--accent-amber)' }}>
+                    <Clock size={24} />
+                  </div>
+                  <div className="stat-meta">
+                    <div className="label">Ingestion Latency</div>
+                    <div className="value">&lt; 1.5 ms</div>
+                    <div className="delta">Sub-millisecond pipeline</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Architecture Pipeline Visual Card */}
+              <div className="card">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
+                  <h3 style={{ fontSize: '1.1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <TrendingUp size={18} style={{ color: 'var(--accent-cyan)' }} />
+                    Live Data & Rule Processing Pipeline
+                  </h3>
+                  <span className="badge-tag live">Zero-Loss Bus</span>
+                </div>
+
+                <div style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gap: '16px',
+                  alignItems: 'center',
+                  background: 'var(--bg-surface)',
+                  padding: '24px',
+                  borderRadius: 'var(--radius-md)',
+                  border: '1px solid var(--border-subtle)'
+                }}>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent-cyan)' }}>1. Device Edge</div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      HTTP & MQTT Token Auth
+                    </p>
+                  </div>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>➔</div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent-emerald)' }}>2. Event Bus</div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      Partitioned by Device ID
+                    </p>
+                  </div>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>➔</div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent-violet)' }}>3. Rule Engine</div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      Thresholds & Alarm Trigger
+                    </p>
+                  </div>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>➔</div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent-amber)' }}>4. Telemetry & State</div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      TsKV, Scopes & Activity
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Quick Jump */}
+              <div className="card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Fleet Management & Real-time Studio</h3>
+                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      Inspect telemetry, configure scoped attributes, manage alarms, and test with the simulator.
+                    </p>
+                  </div>
+                  <button className="btn btn-secondary" onClick={() => setActiveTab('devices')}>
+                    <span>Open Fleet ({devices.length})</span>
+                    <ChevronRight size={16} />
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* TAB 2: DEVICES FLEET */}
+          {activeTab === 'devices' && (
+            <>
+              <div className="page-header">
+                <div>
+                  <h2 className="page-title">Device Fleet</h2>
+                  <p className="page-subtitle">Provision, authenticate, and monitor edge devices</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn btn-secondary" onClick={loadDevices}>
+                    <RefreshCw size={15} className={devicesLoading ? 'animate-spin' : ''} />
+                    <span>Refresh</span>
+                  </button>
+                  <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>
+                    <Plus size={16} />
+                    <span>Create Device</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="table-container">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Status</th>
+                      <th>Device Name</th>
+                      <th>Label</th>
+                      <th>Access Token</th>
+                      <th>Created</th>
+                      <th style={{ textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {devices.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)' }}>
+                          {devicesLoading ? 'Loading device inventory...' : 'No devices found in this tenant. Click "Create Device" to register one.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      devices.map(dev => {
+                        const tokenStr = deviceTokens[dev.id] || 'Loading...';
+                        const isOnline = deviceActivities[dev.id]?.active ?? true;
+                        return (
+                          <tr key={dev.id}>
+                            <td>
+                              <span style={{ 
+                                display: 'inline-flex', 
+                                alignItems: 'center', 
+                                gap: '6px', 
+                                fontSize: '0.8rem', 
+                                color: isOnline ? 'var(--accent-emerald)' : 'var(--text-muted)' 
+                              }}>
+                                <span style={{ 
+                                  width: '8px', 
+                                  height: '8px', 
+                                  borderRadius: '50%', 
+                                  background: isOnline ? 'var(--accent-emerald)' : 'var(--text-muted)', 
+                                  boxShadow: isOnline ? '0 0 6px var(--accent-emerald)' : 'none' 
+                                }}></span>
+                                {isOnline ? 'Online' : 'Idle'}
+                              </span>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 600, color: '#fff', cursor: 'pointer' }} onClick={() => { setSelectedDeviceId(dev.id); setActiveTab('device-detail'); }}>
+                                {dev.name}
+                              </div>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
+                                {dev.id}
+                              </div>
+                            </td>
+                            <td>
+                              <span className="badge-tag" style={{ background: 'var(--bg-surface-elevated)', color: 'var(--text-secondary)' }}>
+                                {dev.label || 'Default Profile'}
+                              </span>
+                            </td>
+                            <td>
+                              <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}>
+                                <code style={{ fontSize: '0.8rem', background: 'rgba(0,0,0,0.3)', padding: '2px 8px', borderRadius: '4px', color: 'var(--accent-cyan)' }}>
+                                  {tokenStr}
+                                </code>
+                                <button 
+                                  className="btn btn-secondary btn-sm"
+                                  style={{ padding: '3px 6px' }}
+                                  onClick={() => copyToClipboard(tokenStr, dev.id)}
+                                  title="Copy Device Token"
+                                >
+                                  {copiedToken === dev.id ? <Check size={12} style={{ color: 'var(--accent-emerald)' }} /> : <Copy size={12} />}
+                                </button>
+                              </div>
+                            </td>
+                            <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {new Date(dev.created_time).toLocaleString()}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', gap: '8px' }}>
+                                <button 
+                                  className="btn btn-secondary btn-sm"
+                                  onClick={() => {
+                                    setSelectedDeviceId(dev.id);
+                                    setActiveTab('device-detail');
+                                  }}
+                                >
+                                  <Sliders size={14} />
+                                  <span>Device Studio</span>
+                                </button>
+                                <button 
+                                  className="btn btn-danger btn-sm"
+                                  onClick={() => handleDeleteDevice(dev.id)}
+                                  title="Delete Device"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* TAB 3: DEVICE DETAIL (Telemetry + Scoped Attributes Studio) */}
+          {activeTab === 'device-detail' && selectedDeviceId && (
+            <>
+              <div className="page-header">
+                <div>
+                  <button 
+                    className="btn btn-secondary btn-sm" 
+                    onClick={() => setActiveTab('devices')}
+                    style={{ marginBottom: '8px' }}
+                  >
+                    ← Back to Fleet
+                  </button>
+                  <h2 className="page-title">{selectedDevice?.name || 'Device Details'}</h2>
+                  <p className="page-subtitle">
+                    ID: <span className="font-mono">{selectedDeviceId}</span> · Token: <span className="font-mono" style={{ color: 'var(--accent-cyan)' }}>{deviceTokens[selectedDeviceId] || 'Fetching...'}</span>
+                  </p>
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <div style={{ display: 'flex', background: 'var(--bg-surface-elevated)', borderRadius: 'var(--radius-md)', padding: '3px' }}>
+                    <button 
+                      className={`btn btn-sm ${deviceDetailSubTab === 'telemetry' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setDeviceDetailSubTab('telemetry')}
+                      style={{ border: 'none' }}
+                    >
+                      <Activity size={14} />
+                      <span>Telemetry & Simulator</span>
+                    </button>
+                    <button 
+                      className={`btn btn-sm ${deviceDetailSubTab === 'attributes' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setDeviceDetailSubTab('attributes')}
+                      style={{ border: 'none' }}
+                    >
+                      <Tag size={14} />
+                      <span>Attributes ({attributes.length})</span>
+                    </button>
+                  </div>
+
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.85rem', cursor: 'pointer' }}>
+                    <input 
+                      type="checkbox" 
+                      checked={autoRefresh} 
+                      onChange={e => setAutoRefresh(e.target.checked)} 
+                    />
+                    <span>Auto-Poll (2s)</span>
+                  </label>
+                  <button className="btn btn-secondary" onClick={() => loadDeviceData(selectedDeviceId)}>
+                    <RefreshCw size={15} />
+                    <span>Refresh</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* SUBTAB 1: TELEMETRY & SIMULATOR */}
+              {deviceDetailSubTab === 'telemetry' && (
+                <>
+                  {/* Latest Telemetry Cards */}
+                  <div className="card">
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Activity size={18} style={{ color: 'var(--accent-emerald)' }} />
+                      Latest Ingested Telemetry
+                    </h3>
+
+                    {Object.keys(latestTelemetry).length === 0 ? (
+                      <div style={{ textAlign: 'center', padding: '32px', color: 'var(--text-muted)' }}>
+                        No telemetry received yet. Use the simulator below or post via HTTP/MQTT to see live values!
+                      </div>
+                    ) : (
+                      <div className="telemetry-grid">
+                        {Object.entries(latestTelemetry).map(([key, pts]) => {
+                          const latestPt = pts && pts[0];
+                          const val = latestPt ? latestPt.value : '--';
+                          const ts = latestPt ? new Date(latestPt.ts).toLocaleTimeString() : '';
+                          return (
+                            <div key={key} className="telemetry-card">
+                              <div className="telemetry-key">{key}</div>
+                              <div className="telemetry-val">
+                                {typeof val === 'number' ? val.toLocaleString() : String(val)}
+                                {key === 'temperature' ? ' °C' : key === 'humidity' ? ' %' : key === 'voltage' ? ' V' : key === 'battery' ? ' %' : ''}
+                              </div>
+                              <div className="telemetry-ts">Updated: {ts}</div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Telemetry Sparkline / Historical Chart */}
+                  <div className="chart-container">
+                    <div className="chart-header">
+                      <div>
+                        <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <TrendingUp size={16} style={{ color: 'var(--accent-cyan)' }} />
+                          Temperature History & Thresholds
+                        </h3>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          Critical Alarm Threshold: 45°C · Warning Threshold: 35°C
+                        </p>
+                      </div>
+                      {chartPoints && (
+                        <span className="badge-tag live">
+                          {chartPoints.pts.length} points plotted
+                        </span>
+                      )}
+                    </div>
+
+                    {chartPoints && chartPoints.pts.length > 1 ? (
+                      <svg className="svg-chart" viewBox={`0 0 ${chartPoints.width} ${chartPoints.height}`}>
+                        <defs>
+                          <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="var(--accent-cyan)" stopOpacity="0.4" />
+                            <stop offset="100%" stopColor="var(--accent-cyan)" stopOpacity="0.0" />
+                          </linearGradient>
+                        </defs>
+                        {/* Horizontal grid lines */}
+                        <line x1="20" y1="20" x2={chartPoints.width - 20} y2="20" stroke="var(--border-subtle)" strokeDasharray="4" />
+                        <line x1="20" y1={chartPoints.height / 2} x2={chartPoints.width - 20} y2={chartPoints.height / 2} stroke="var(--border-subtle)" strokeDasharray="4" />
+                        <line x1="20" y1={chartPoints.height - 20} x2={chartPoints.width - 20} y2={chartPoints.height - 20} stroke="var(--border-subtle)" strokeDasharray="4" />
+
+                        {/* Gradient Area Fill */}
+                        <path d={chartPoints.areaD} fill="url(#chartGradient)" />
+
+                        {/* Curve Line */}
+                        <path d={chartPoints.pathD} fill="none" stroke="var(--accent-cyan)" strokeWidth="2.5" />
+
+                        {/* Coordinate Points */}
+                        {chartPoints.pts.map((p, i) => (
+                          <circle key={i} cx={p.x} cy={p.y} r="3" fill="#fff" stroke="var(--accent-cyan)" strokeWidth="2">
+                            <title>{`${p.val}°C at ${new Date(p.ts).toLocaleTimeString()}`}</title>
+                          </circle>
+                        ))}
+                      </svg>
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        Send telemetry points using the simulator below to generate the history graph.
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Integrated Interactive Device Simulator */}
+                  <div className="simulator-box">
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <div>
+                        <h3 style={{ fontSize: '1.1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px', color: '#fff' }}>
+                          <Sliders size={18} style={{ color: 'var(--accent-cyan)' }} />
+                          Interactive Device Telemetry Simulator
+                        </h3>
+                        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                          Drag temperature &gt; 45°C to watch the Rule Engine trigger an automated CRITICAL ALARM!
+                        </p>
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '10px' }}>
+                        <button 
+                          className={`btn ${isSimulating ? 'btn-danger' : 'btn-primary'}`} 
+                          onClick={() => setIsSimulating(!isSimulating)}
+                        >
+                          {isSimulating ? <Square size={16} /> : <Play size={16} />}
+                          <span>{isSimulating ? 'Stop Auto-Stream' : 'Auto-Stream (2s)'}</span>
+                        </button>
+                        <button className="btn btn-secondary" onClick={sendSingleSimulation}>
+                          <Send size={15} />
+                          <span>Send Single Sample</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Slider Controls */}
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', background: 'var(--bg-surface)', padding: '20px', borderRadius: 'var(--radius-md)' }}>
+                      <div className="slider-row">
+                        <span className="slider-label" style={{ color: simTemp > 45 ? 'var(--accent-rose)' : simTemp > 35 ? 'var(--accent-amber)' : 'inherit' }}>
+                          Temperature (°C) {simTemp > 45 ? '🔥 [ALARM!]' : ''}
+                        </span>
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max="60" 
+                          step="0.5" 
+                          value={simTemp} 
+                          onChange={e => setSimTemp(parseFloat(e.target.value))} 
+                        />
+                        <span className="slider-val" style={{ color: simTemp > 45 ? 'var(--accent-rose)' : 'var(--accent-cyan)' }}>
+                          {simTemp} °C
+                        </span>
+                      </div>
+
+                      <div className="slider-row">
+                        <span className="slider-label">Humidity (%)</span>
+                        <input 
+                          type="range" 
+                          min="10" 
+                          max="100" 
+                          step="1" 
+                          value={simHumidity} 
+                          onChange={e => setSimHumidity(parseFloat(e.target.value))} 
+                        />
+                        <span className="slider-val">{simHumidity} %</span>
+                      </div>
+
+                      <div className="slider-row">
+                        <span className="slider-label">Voltage (V)</span>
+                        <input 
+                          type="range" 
+                          min="2.8" 
+                          max="4.5" 
+                          step="0.1" 
+                          value={simVoltage} 
+                          onChange={e => setSimVoltage(parseFloat(e.target.value))} 
+                        />
+                        <span className="slider-val">{simVoltage} V</span>
+                      </div>
+
+                      <div className="slider-row">
+                        <span className="slider-label">Battery (%)</span>
+                        <input 
+                          type="range" 
+                          min="0" 
+                          max="100" 
+                          step="1" 
+                          value={simBattery} 
+                          onChange={e => setSimBattery(parseFloat(e.target.value))} 
+                        />
+                        <span className="slider-val">{simBattery} %</span>
+                      </div>
+                    </div>
+
+                    {/* Simulation Transmission Logs */}
+                    <div>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', textTransform: 'uppercase' }}>
+                        Simulator Transmission Log
+                      </div>
+                      <div style={{
+                        background: '#040711',
+                        border: '1px solid var(--border-subtle)',
+                        borderRadius: 'var(--radius-md)',
+                        padding: '12px',
+                        height: '110px',
+                        overflowY: 'auto',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: '0.75rem',
+                        color: 'var(--accent-emerald)',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '4px'
+                      }}>
+                        {simLog.length === 0 ? (
+                          <span style={{ color: 'var(--text-muted)' }}>No simulation packets sent yet. Click "Send Single Sample" or "Auto-Stream".</span>
+                        ) : (
+                          simLog.map((log, idx) => <div key={idx}>{log}</div>)
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Physical Ingestion Quickstart */}
+                  <div className="card">
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Terminal size={18} style={{ color: 'var(--accent-amber)' }} />
+                      Physical Device Ingestion Guide
+                    </h3>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px' }}>
+                      <div>
+                        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                          MQTT Telemetry Publish (Port 1883)
+                        </div>
+                        <pre style={{
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-subtle)',
+                          padding: '12px',
+                          borderRadius: 'var(--radius-md)',
+                          fontSize: '0.75rem',
+                          color: 'var(--text-primary)',
+                          overflowX: 'auto'
+                        }}>
+{`mosquitto_pub -h localhost -p 1883 \\
+  -u "${deviceTokens[selectedDeviceId] || 'YOUR_TOKEN'}" \\
+  -t "v1/devices/me/telemetry" \\
+  -m '{"temperature":26.2,"humidity":58}'`}
+                        </pre>
+                      </div>
+
+                      <div>
+                        <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px' }}>
+                          HTTP Telemetry Upload (Port 8080)
+                        </div>
+                        <pre style={{
+                          background: 'var(--bg-surface)',
+                          border: '1px solid var(--border-subtle)',
+                          padding: '12px',
+                          borderRadius: 'var(--radius-md)',
+                          fontSize: '0.75rem',
+                          color: 'var(--text-primary)',
+                          overflowX: 'auto'
+                        }}>
+{`curl -X POST http://localhost:8080/api/v1/${deviceTokens[selectedDeviceId] || 'YOUR_TOKEN'}/telemetry \\
+  -H "Content-Type: application/json" \\
+  -d '{"temperature":26.2,"humidity":58}'`}
+                        </pre>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {/* SUBTAB 2: ATTRIBUTES MANAGER */}
+              {deviceDetailSubTab === 'attributes' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  {/* Save Attribute Form */}
+                  <div className="card">
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px' }}>
+                      Add or Update Device Attribute
+                    </h3>
+                    <form onSubmit={handleSaveAttribute} style={{ display: 'grid', gridTemplateColumns: '180px 1fr 1fr auto', gap: '12px', alignItems: 'end' }}>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">Scope</label>
+                        <select 
+                          className="form-input" 
+                          value={newAttrScope} 
+                          onChange={(e: any) => setNewAttrScope(e.target.value)}
+                        >
+                          <option value="SERVER_SCOPE">SERVER_SCOPE</option>
+                          <option value="SHARED_SCOPE">SHARED_SCOPE</option>
+                        </select>
+                      </div>
+
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">Key Name</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="e.g. location or target_temp" 
+                          value={newAttrKey} 
+                          onChange={e => setNewAttrKey(e.target.value)} 
+                          required 
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">Value</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          placeholder="e.g. 24.5 or Factory Floor" 
+                          value={newAttrVal} 
+                          onChange={e => setNewAttrVal(e.target.value)} 
+                          required 
+                        />
+                      </div>
+
+                      <button type="submit" className="btn btn-primary" style={{ height: '42px' }}>
+                        <Plus size={16} />
+                        <span>Save</span>
+                      </button>
+                    </form>
+                  </div>
+
+                  {/* Attributes Table */}
+                  <div className="table-container">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Scope</th>
+                          <th>Key</th>
+                          <th>Value</th>
+                          <th>Last Updated</th>
+                          <th style={{ textAlign: 'right' }}>Action</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {attributes.length === 0 ? (
+                          <tr>
+                            <td colSpan={5} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                              No attributes configured for this device yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          attributes.map(attr => (
+                            <tr key={`${attr.scope}-${attr.key}`}>
+                              <td>
+                                <span className="badge-tag" style={{
+                                  background: attr.scope === 'CLIENT_SCOPE' ? 'rgba(6, 182, 212, 0.15)' : attr.scope === 'SHARED_SCOPE' ? 'rgba(139, 92, 246, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                                  color: attr.scope === 'CLIENT_SCOPE' ? 'var(--accent-cyan)' : attr.scope === 'SHARED_SCOPE' ? 'var(--accent-violet)' : 'var(--accent-amber)',
+                                  border: '1px solid var(--border-subtle)'
+                                }}>
+                                  {attr.scope}
+                                </span>
+                              </td>
+                              <td style={{ fontWeight: 600, color: '#fff' }}>
+                                {attr.key}
+                              </td>
+                              <td className="font-mono" style={{ color: 'var(--accent-emerald)' }}>
+                                {typeof attr.value === 'object' ? JSON.stringify(attr.value) : String(attr.value)}
+                              </td>
+                              <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                {new Date(attr.last_update_ts).toLocaleString()}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <button 
+                                  className="btn btn-danger btn-sm"
+                                  onClick={() => handleDeleteAttribute(attr.scope, attr.key)}
+                                  title="Delete Attribute"
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* TAB 4: ALARMS MANAGEMENT */}
+          {activeTab === 'alarms' && (
+            <>
+              <div className="page-header">
+                <div>
+                  <h2 className="page-title">Alarms & Incidents</h2>
+                  <p className="page-subtitle">Realtime alert tracking generated by the Rule Engine and threshold evaluation</p>
+                </div>
+                <button className="btn btn-secondary" onClick={loadAlarms}>
+                  <RefreshCw size={15} className={alarmsLoading ? 'animate-spin' : ''} />
+                  <span>Refresh Alarms</span>
+                </button>
+              </div>
+
+              <div className="table-container">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Severity</th>
+                      <th>Alarm Type</th>
+                      <th>Status</th>
+                      <th>Originator ID</th>
+                      <th>Trigger Time</th>
+                      <th style={{ textAlign: 'right' }}>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {alarms.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)' }}>
+                          {alarmsLoading ? 'Loading alarms...' : 'No alarms recorded. All device metrics are within normal parameters!'}
+                        </td>
+                      </tr>
+                    ) : (
+                      alarms.map(alarm => {
+                        const isCritical = alarm.severity === 'CRITICAL';
+                        const isMajor = alarm.severity === 'MAJOR';
+                        const isWarning = alarm.severity === 'WARNING';
+                        const isAcked = alarm.status.includes('ACK');
+                        const isCleared = alarm.status.startsWith('CLEARED');
+
+                        return (
+                          <tr key={alarm.id}>
+                            <td>
+                              <span className="badge-tag" style={{
+                                background: isCritical ? 'rgba(244, 63, 94, 0.2)' : isMajor ? 'rgba(239, 68, 68, 0.15)' : isWarning ? 'rgba(245, 158, 11, 0.2)' : 'rgba(6, 182, 212, 0.15)',
+                                color: isCritical || isMajor ? 'var(--accent-rose)' : isWarning ? 'var(--accent-amber)' : 'var(--accent-cyan)',
+                                border: '1px solid var(--border-subtle)'
+                              }}>
+                                <AlertTriangle size={12} />
+                                {alarm.severity}
+                              </span>
+                            </td>
+                            <td>
+                              <div style={{ fontWeight: 600, color: '#fff' }}>{alarm.type}</div>
+                              {alarm.details && (
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                                  {(alarm.details as any).message || JSON.stringify(alarm.details)}
+                                </div>
+                              )}
+                            </td>
+                            <td>
+                              <span className="badge-tag" style={{
+                                background: isCleared ? 'rgba(16, 185, 129, 0.15)' : isAcked ? 'rgba(56, 189, 248, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                                color: isCleared ? 'var(--accent-emerald)' : isAcked ? 'var(--accent-cyan)' : 'var(--accent-rose)'
+                              }}>
+                                {alarm.status}
+                              </span>
+                            </td>
+                            <td className="font-mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {alarm.originator_id}
+                            </td>
+                            <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                              {new Date(alarm.start_ts).toLocaleString()}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <div style={{ display: 'inline-flex', gap: '8px' }}>
+                                {!isAcked && !isCleared && (
+                                  <button 
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => handleAckAlarm(alarm.id)}
+                                    title="Acknowledge Alarm"
+                                  >
+                                    <CheckCircle size={13} style={{ color: 'var(--accent-cyan)' }} />
+                                    <span>Ack</span>
+                                  </button>
+                                )}
+                                {!isCleared && (
+                                  <button 
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => handleClearAlarm(alarm.id)}
+                                    title="Clear Alarm"
+                                  >
+                                    <XCircle size={13} style={{ color: 'var(--accent-emerald)' }} />
+                                    <span>Clear</span>
+                                  </button>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
+
+          {/* TAB 5: SYSTEM HEALTH */}
+          {activeTab === 'system' && (
+            <>
+              <div className="page-header">
+                <div>
+                  <h2 className="page-title">Platform Supervisor & Telemetry Bus</h2>
+                  <p className="page-subtitle">Internal service health, memory allocation, and pipeline guarantees</p>
+                </div>
+              </div>
+
+              <div className="stats-grid">
+                <div className="card">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <Server size={20} style={{ color: 'var(--accent-emerald)' }} />
+                    <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Service Supervisor</h3>
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    Endpoints: <code style={{ color: 'var(--accent-cyan)' }}>/healthz</code>, <code style={{ color: 'var(--accent-cyan)' }}>/readyz</code>, <code style={{ color: 'var(--accent-cyan)' }}>/metrics</code>
+                  </p>
+                  <div style={{ marginTop: '12px' }}>
+                    <span className="badge-tag live">All Checks Healthy</span>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <ShieldCheck size={20} style={{ color: 'var(--accent-violet)' }} />
+                    <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Multi-Tenant Isolation</h3>
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    Row Level Security (RLS) enforcement via <code style={{ color: 'var(--accent-cyan)' }}>app.tenant_id</code> session GUC on PostgreSQL.
+                  </p>
+                  <div style={{ marginTop: '12px' }}>
+                    <span className="badge-tag live">Zero Leakage</span>
+                  </div>
+                </div>
+
+                <div className="card">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                    <Radio size={20} style={{ color: 'var(--accent-amber)' }} />
+                    <h3 style={{ fontSize: '1rem', fontWeight: 700 }}>Event Ordering</h3>
+                  </div>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    Strict per-originator-key partitioning ensures timestamps never arrive out-of-order at storage workers.
+                  </p>
+                  <div style={{ marginTop: '12px' }}>
+                    <span className="badge-tag live">FIFO Per Device</span>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </main>
+
+      {/* CREATE DEVICE MODAL */}
+      {showCreateModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 className="modal-title">Register New IoT Device</h3>
+              <button 
+                onClick={() => setShowCreateModal(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateDevice}>
+              <div className="form-group">
+                <label className="form-label">Device Name *</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. weather-station-01" 
+                  value={newDeviceName} 
+                  onChange={e => setNewDeviceName(e.target.value)} 
+                  required 
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Device Label / Description</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. Building A Rooftop Sensor" 
+                  value={newDeviceLabel} 
+                  onChange={e => setNewDeviceLabel(e.target.value)} 
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Custom Access Token (Optional)</label>
+                <input 
+                  type="text" 
+                  className="form-input font-mono" 
+                  placeholder="Leave blank to auto-generate secure token" 
+                  value={newDeviceToken} 
+                  onChange={e => setNewDeviceToken(e.target.value)} 
+                />
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                  This token will be used by the physical device to authenticate over HTTP or MQTT.
+                </span>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={createLoading}>
+                  {createLoading ? <RefreshCw className="animate-spin" size={16} /> : <Check size={16} />}
+                  <span>Provision Device</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
