@@ -25,10 +25,18 @@ import {
   Bell,
   CheckCircle,
   XCircle,
-  Tag
+  Tag,
+  LayoutDashboard,
+  Power,
+  Share2,
+  Gauge,
+  Network
 } from 'lucide-react';
 import { api } from './api';
-import type { Device, User, TelemetryMap, AttributeKv, Alarm, DeviceActivity } from './api';
+import type { Device, User, TelemetryMap, AttributeKv, Alarm, DeviceActivity, Dashboard, RpcCommand } from './api';
+import { IntegrationsView } from './components/IntegrationsView';
+import { ScadaView } from './components/ScadaView';
+import { EdgeView } from './components/EdgeView';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(api.getToken());
@@ -37,10 +45,10 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Navigation: overview, devices, device-detail, alarms, system
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'alarms' | 'system'>('devices');
+  // Navigation: overview, devices, device-detail, dashboards, alarms, system, integrations, scada, edge
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'dashboards' | 'alarms' | 'system' | 'integrations' | 'scada' | 'edge'>('devices');
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const [deviceDetailSubTab, setDeviceDetailSubTab] = useState<'telemetry' | 'attributes'>('telemetry');
+  const [deviceDetailSubTab, setDeviceDetailSubTab] = useState<'telemetry' | 'attributes' | 'rpc'>('telemetry');
 
   // Login form
   const [email, setEmail] = useState('tenant@example.com');
@@ -78,6 +86,19 @@ export default function App() {
   const [alarms, setAlarms] = useState<Alarm[]>([]);
   const [alarmsLoading, setAlarmsLoading] = useState(false);
 
+  // Dashboards State
+  const [dashboards, setDashboards] = useState<Dashboard[]>([]);
+  const [selectedDashboard, setSelectedDashboard] = useState<Dashboard | null>(null);
+  const [showCreateDashModal, setShowCreateDashModal] = useState(false);
+  const [newDashTitle, setNewDashTitle] = useState('');
+
+  // RPC State
+  const [rpcCommands, setRpcCommands] = useState<RpcCommand[]>([]);
+  const [rpcMethod, setRpcMethod] = useState('setRelay');
+  const [rpcParams, setRpcParams] = useState('{"relay": 1, "state": true}');
+  const [rpcSending, setRpcSending] = useState(false);
+  const [relayActive, setRelayActive] = useState(false);
+
   // Simulator State
   const [simTemp, setSimTemp] = useState(24.5);
   const [simHumidity, setSimHumidity] = useState(55);
@@ -113,7 +134,7 @@ export default function App() {
     setSelectedDevice(null);
   };
 
-  // Fetch devices & alarms
+  // Fetch devices, alarms, dashboards
   const loadDevices = async () => {
     if (!token) return;
     setDevicesLoading(true);
@@ -148,16 +169,30 @@ export default function App() {
     }
   };
 
+  const loadDashboards = async () => {
+    if (!token) return;
+    try {
+      const res = await api.listDashboards(1, 50);
+      setDashboards(res.data || []);
+      if (!selectedDashboard && res.data && res.data.length > 0) {
+        setSelectedDashboard(res.data[0]);
+      }
+    } catch (err) {
+      console.error('Failed to load dashboards:', err);
+    }
+  };
+
   useEffect(() => {
     if (token) {
       loadDevices();
       loadAlarms();
+      loadDashboards();
       const interval = setInterval(loadAlarms, 5000);
       return () => clearInterval(interval);
     }
   }, [token]);
 
-  // Load selected device details, telemetry, and attributes
+  // Load selected device details, telemetry, attributes, and RPC
   const loadDeviceData = async (devId: string) => {
     try {
       const dev = await api.getDevice(devId);
@@ -180,12 +215,16 @@ export default function App() {
       // Activity
       const act = await api.getDeviceActivity(devId);
       setDeviceActivities(prev => ({ ...prev, [devId]: act }));
+
+      // RPC History
+      const rpcs = await api.getRpcHistory(devId);
+      setRpcCommands(rpcs.data || []);
     } catch (err) {
       console.error('Error loading device telemetry:', err);
     }
   };
 
-  // Poll device data when on detail page
+  // Poll device data when on detail page or dashboard
   useEffect(() => {
     if (activeTab === 'device-detail' && selectedDeviceId) {
       loadDeviceData(selectedDeviceId);
@@ -196,8 +235,19 @@ export default function App() {
         }, 2000);
         return () => clearInterval(interval);
       }
+    } else if (activeTab === 'dashboards' && devices.length > 0) {
+      const targetDevId = selectedDashboard?.configuration?.deviceId || devices[0]?.id;
+      if (targetDevId) {
+        loadDeviceData(targetDevId);
+        if (autoRefresh) {
+          const interval = setInterval(() => {
+            loadDeviceData(targetDevId);
+          }, 2000);
+          return () => clearInterval(interval);
+        }
+      }
     }
-  }, [activeTab, selectedDeviceId, autoRefresh]);
+  }, [activeTab, selectedDeviceId, selectedDashboard, autoRefresh, devices]);
 
   // Simulator streamer
   useEffect(() => {
@@ -271,6 +321,102 @@ export default function App() {
     }
   };
 
+  const handleSendRpc = async (isTwoWay = true) => {
+    const devId = selectedDeviceId || devices[0]?.id;
+    if (!devId) return;
+
+    setRpcSending(true);
+    try {
+      let parsedParams: any = {};
+      try {
+        parsedParams = JSON.parse(rpcParams);
+      } catch {
+        parsedParams = { val: rpcParams };
+      }
+
+      if (isTwoWay) {
+        // Send two-way RPC (device simulation will answer)
+        const cmdPromise = api.sendTwoWayRpc(devId, rpcMethod, parsedParams, 4000);
+        // Simulate device picking up the RPC and responding after 300ms
+        const devToken = deviceTokens[devId];
+        if (devToken) {
+          setTimeout(async () => {
+            const pending = await api.pollDeviceRpc(devToken);
+            if (pending) {
+              await api.respondDeviceRpc(devToken, pending.id, {
+                success: true,
+                executed_at: Date.now(),
+                state: parsedParams.state ?? true,
+              });
+            }
+          }, 400);
+        }
+        await cmdPromise;
+      } else {
+        await api.sendOneWayRpc(devId, rpcMethod, parsedParams);
+      }
+
+      loadDeviceData(devId);
+    } catch (err: any) {
+      alert('RPC execution error: ' + err.message);
+    } finally {
+      setRpcSending(false);
+    }
+  };
+
+  const handleToggleRelayFromDashboard = async () => {
+    const devId = selectedDashboard?.configuration?.deviceId || devices[0]?.id;
+    if (!devId) return;
+
+    const nextState = !relayActive;
+    setRelayActive(nextState);
+    const devToken = deviceTokens[devId];
+
+    try {
+      const cmdPromise = api.sendTwoWayRpc(devId, 'setRelay', { relay: 1, state: nextState }, 3000);
+      if (devToken) {
+        setTimeout(async () => {
+          const pending = await api.pollDeviceRpc(devToken);
+          if (pending) {
+            await api.respondDeviceRpc(devToken, pending.id, {
+              success: true,
+              relay: 1,
+              state: nextState,
+            });
+          }
+        }, 300);
+      }
+      await cmdPromise;
+      loadDeviceData(devId);
+    } catch (e: any) {
+      console.error('Relay toggle failed:', e);
+    }
+  };
+
+  const handleCreateDashboard = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newDashTitle.trim()) return;
+    try {
+      const defaultDevId = devices[0]?.id || '';
+      const cfg = {
+        deviceId: defaultDevId,
+        widgets: [
+          { id: 'w1', type: 'metric_card', title: 'Ambient Temperature', key: 'temperature', unit: '°C' },
+          { id: 'w2', type: 'metric_card', title: 'Relative Humidity', key: 'humidity', unit: '%' },
+          { id: 'w3', type: 'timeseries_chart', title: 'Live Sensor Trend', key: 'temperature' },
+          { id: 'w4', type: 'rpc_control', title: 'Relay Switch #1', method: 'setRelay' },
+        ],
+      };
+      const created = await api.createDashboard(newDashTitle.trim(), cfg);
+      setShowCreateDashModal(false);
+      setNewDashTitle('');
+      await loadDashboards();
+      setSelectedDashboard(created);
+    } catch (err: any) {
+      alert('Failed to create dashboard: ' + err.message);
+    }
+  };
+
   const handleSaveAttribute = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedDeviceId || !newAttrKey.trim()) return;
@@ -279,7 +425,7 @@ export default function App() {
       try {
         parsedVal = JSON.parse(newAttrVal);
       } catch {
-        // use string if not valid JSON
+        // string
       }
       await api.saveScopedAttributes(selectedDeviceId, newAttrScope, { [newAttrKey.trim()]: parsedVal });
       setNewAttrKey('');
@@ -498,6 +644,13 @@ export default function App() {
             <span>Overview</span>
           </li>
           <li 
+            className={`nav-item ${activeTab === 'dashboards' ? 'active' : ''}`}
+            onClick={() => setActiveTab('dashboards')}
+          >
+            <LayoutDashboard size={18} />
+            <span>Live Dashboards</span>
+          </li>
+          <li 
             className={`nav-item ${activeTab === 'devices' || activeTab === 'device-detail' ? 'active' : ''}`}
             onClick={() => setActiveTab('devices')}
           >
@@ -524,6 +677,27 @@ export default function App() {
                 {activeAlarmCount}
               </span>
             )}
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'integrations' ? 'active' : ''}`}
+            onClick={() => setActiveTab('integrations')}
+          >
+            <Share2 size={18} />
+            <span>Integrations</span>
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'scada' ? 'active' : ''}`}
+            onClick={() => setActiveTab('scada')}
+          >
+            <Gauge size={18} />
+            <span>SCADA & HMI</span>
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'edge' ? 'active' : ''}`}
+            onClick={() => setActiveTab('edge')}
+          >
+            <Network size={18} />
+            <span>Edge Fleet</span>
           </li>
           <li 
             className={`nav-item ${activeTab === 'system' ? 'active' : ''}`}
@@ -619,13 +793,13 @@ export default function App() {
                 </div>
 
                 <div className="stat-card">
-                  <div className="stat-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--accent-emerald)' }}>
-                    <Activity size={24} />
+                  <div className="stat-icon" style={{ background: 'rgba(139, 92, 246, 0.15)', color: 'var(--accent-violet)' }}>
+                    <LayoutDashboard size={24} />
                   </div>
                   <div className="stat-meta">
-                    <div className="label">Rule Engine</div>
-                    <div className="value">Active</div>
-                    <div className="delta">Realtime Threshold Alerts</div>
+                    <div className="label">Live Dashboards</div>
+                    <div className="value">{dashboards.length}</div>
+                    <div className="delta">Custom Canvases</div>
                   </div>
                 </div>
 
@@ -659,14 +833,14 @@ export default function App() {
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
                   <h3 style={{ fontSize: '1.1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
                     <TrendingUp size={18} style={{ color: 'var(--accent-cyan)' }} />
-                    Live Data & Rule Processing Pipeline
+                    Live Data, Downlink RPC & Dashboards Architecture
                   </h3>
                   <span className="badge-tag live">Zero-Loss Bus</span>
                 </div>
 
                 <div style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
                   gap: '16px',
                   alignItems: 'center',
                   background: 'var(--bg-surface)',
@@ -696,9 +870,16 @@ export default function App() {
                   </div>
                   <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>➔</div>
                   <div style={{ textAlign: 'center' }}>
-                    <div style={{ fontWeight: 700, color: 'var(--accent-amber)' }}>4. Telemetry & State</div>
+                    <div style={{ fontWeight: 700, color: 'var(--accent-amber)' }}>4. Downlink RPC</div>
                     <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                      TsKV, Scopes & Activity
+                      Two-Way Control Commands
+                    </p>
+                  </div>
+                  <div style={{ textAlign: 'center', color: 'var(--text-muted)' }}>➔</div>
+                  <div style={{ textAlign: 'center' }}>
+                    <div style={{ fontWeight: 700, color: 'var(--accent-cyan)' }}>5. Dashboards</div>
+                    <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+                      Live Realtime Canvases
                     </p>
                   </div>
                 </div>
@@ -708,13 +889,13 @@ export default function App() {
               <div className="card">
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <div>
-                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Fleet Management & Real-time Studio</h3>
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700 }}>Interactive Realtime Canvases</h3>
                     <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                      Inspect telemetry, configure scoped attributes, manage alarms, and test with the simulator.
+                      View live telemetry gauges, timeseries charts, and execute two-way RPC controls directly.
                     </p>
                   </div>
-                  <button className="btn btn-secondary" onClick={() => setActiveTab('devices')}>
-                    <span>Open Fleet ({devices.length})</span>
+                  <button className="btn btn-secondary" onClick={() => setActiveTab('dashboards')}>
+                    <span>Open Dashboards ({dashboards.length})</span>
                     <ChevronRight size={16} />
                   </button>
                 </div>
@@ -722,7 +903,161 @@ export default function App() {
             </>
           )}
 
-          {/* TAB 2: DEVICES FLEET */}
+          {/* TAB 2: LIVE DASHBOARDS VIEW */}
+          {activeTab === 'dashboards' && (
+            <>
+              <div className="page-header">
+                <div>
+                  <h2 className="page-title">Live Dashboards Canvas</h2>
+                  <p className="page-subtitle">Real-time analytical visualization cards, charts, and control switches</p>
+                </div>
+                <div style={{ display: 'flex', gap: '12px' }}>
+                  <button className="btn btn-secondary" onClick={loadDashboards}>
+                    <RefreshCw size={15} />
+                    <span>Refresh</span>
+                  </button>
+                  <button className="btn btn-primary" onClick={() => setShowCreateDashModal(true)}>
+                    <Plus size={16} />
+                    <span>New Dashboard</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Dashboard Switcher Bar */}
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', overflowX: 'auto', paddingBottom: '6px' }}>
+                {dashboards.map(d => (
+                  <button 
+                    key={d.id} 
+                    className={`btn btn-sm ${selectedDashboard?.id === d.id ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setSelectedDashboard(d)}
+                  >
+                    <LayoutDashboard size={14} />
+                    <span>{d.title}</span>
+                  </button>
+                ))}
+              </div>
+
+              {selectedDashboard && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
+                  {/* Dashboard Widgets Grid */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
+                    {/* Widget 1: Ambient Temperature Metric Card */}
+                    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+                          Ambient Temperature
+                        </span>
+                        <span className="badge-tag live">Realtime</span>
+                      </div>
+                      <div style={{ fontSize: '2.4rem', fontWeight: 800, color: '#fff', fontFamily: 'var(--font-mono)' }}>
+                        {latestTelemetry['temperature'] ? latestTelemetry['temperature'][0]?.value : 24.6} °C
+                      </div>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
+                        Source: {selectedDevice?.name || 'weather-station-alpha'}
+                      </span>
+                    </div>
+
+                    {/* Widget 2: Relative Humidity Metric Card */}
+                    <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+                          Relative Humidity
+                        </span>
+                        <span className="badge-tag live">Realtime</span>
+                      </div>
+                      <div style={{ fontSize: '2.4rem', fontWeight: 800, color: 'var(--accent-emerald)', fontFamily: 'var(--font-mono)' }}>
+                        {latestTelemetry['humidity'] ? latestTelemetry['humidity'][0]?.value : 55.2} %
+                      </div>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)' }}>
+                        Atmospheric moisture level
+                      </span>
+                    </div>
+
+                    {/* Widget 3: Live RPC Downlink Control Switch */}
+                    <div className="card" style={{ display: 'flex', flexDirection: 'column', justifyContent: 'space-between', gap: '12px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
+                          Two-Way RPC Downlink Switch
+                        </span>
+                        <span className="badge-tag" style={{ background: relayActive ? 'rgba(16, 185, 129, 0.2)' : 'rgba(255,255,255,0.1)', color: relayActive ? 'var(--accent-emerald)' : 'var(--text-muted)' }}>
+                          {relayActive ? 'CLOSED (ON)' : 'OPEN (OFF)'}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '1rem', color: '#fff' }}>Relay Switch #1</div>
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Command: setRelay</div>
+                        </div>
+
+                        <button 
+                          className={`btn ${relayActive ? 'btn-primary' : 'btn-secondary'}`}
+                          onClick={handleToggleRelayFromDashboard}
+                          style={{ padding: '8px 16px', display: 'flex', alignItems: 'center', gap: '8px' }}
+                        >
+                          <Power size={16} />
+                          <span>{relayActive ? 'Turn OFF' : 'Turn ON'}</span>
+                        </button>
+                      </div>
+
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                        Dispatches authenticated RPC payload to edge device with bidirectional ack.
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Widget 4: Live Interactive Timeseries Graph */}
+                  <div className="chart-container">
+                    <div className="chart-header">
+                      <div>
+                        <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <TrendingUp size={16} style={{ color: 'var(--accent-cyan)' }} />
+                          Telemetry Stream History & Trends
+                        </h3>
+                        <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                          Continuous Realtime Timeseries Ingestion
+                        </p>
+                      </div>
+                      {chartPoints && (
+                        <span className="badge-tag live">
+                          {chartPoints.pts.length} points
+                        </span>
+                      )}
+                    </div>
+
+                    {chartPoints && chartPoints.pts.length > 1 ? (
+                      <svg className="svg-chart" viewBox={`0 0 ${chartPoints.width} ${chartPoints.height}`}>
+                        <defs>
+                          <linearGradient id="dashGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="var(--accent-cyan)" stopOpacity="0.4" />
+                            <stop offset="100%" stopColor="var(--accent-cyan)" stopOpacity="0.0" />
+                          </linearGradient>
+                        </defs>
+                        <line x1="20" y1="20" x2={chartPoints.width - 20} y2="20" stroke="var(--border-subtle)" strokeDasharray="4" />
+                        <line x1="20" y1={chartPoints.height / 2} x2={chartPoints.width - 20} y2={chartPoints.height / 2} stroke="var(--border-subtle)" strokeDasharray="4" />
+                        <line x1="20" y1={chartPoints.height - 20} x2={chartPoints.width - 20} y2={chartPoints.height - 20} stroke="var(--border-subtle)" strokeDasharray="4" />
+
+                        <path d={chartPoints.areaD} fill="url(#dashGradient)" />
+                        <path d={chartPoints.pathD} fill="none" stroke="var(--accent-cyan)" strokeWidth="2.5" />
+
+                        {chartPoints.pts.map((p, i) => (
+                          <circle key={i} cx={p.x} cy={p.y} r="3" fill="#fff" stroke="var(--accent-cyan)" strokeWidth="2">
+                            <title>{`${p.val}°C at ${new Date(p.ts).toLocaleTimeString()}`}</title>
+                          </circle>
+                        ))}
+                      </svg>
+                    ) : (
+                      <div style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        Awaiting data stream points...
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* TAB 3: DEVICES FLEET */}
           {activeTab === 'devices' && (
             <>
               <div className="page-header">
@@ -847,7 +1182,7 @@ export default function App() {
             </>
           )}
 
-          {/* TAB 3: DEVICE DETAIL (Telemetry + Scoped Attributes Studio) */}
+          {/* TAB 4: DEVICE DETAIL (Telemetry + Scoped Attributes + Downlink RPC Studio) */}
           {activeTab === 'device-detail' && selectedDeviceId && (
             <>
               <div className="page-header">
@@ -882,6 +1217,14 @@ export default function App() {
                     >
                       <Tag size={14} />
                       <span>Attributes ({attributes.length})</span>
+                    </button>
+                    <button 
+                      className={`btn btn-sm ${deviceDetailSubTab === 'rpc' ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setDeviceDetailSubTab('rpc')}
+                      style={{ border: 'none' }}
+                    >
+                      <Terminal size={14} />
+                      <span>RPC Downlink ({rpcCommands.length})</span>
                     </button>
                   </div>
 
@@ -962,18 +1305,13 @@ export default function App() {
                             <stop offset="100%" stopColor="var(--accent-cyan)" stopOpacity="0.0" />
                           </linearGradient>
                         </defs>
-                        {/* Horizontal grid lines */}
                         <line x1="20" y1="20" x2={chartPoints.width - 20} y2="20" stroke="var(--border-subtle)" strokeDasharray="4" />
                         <line x1="20" y1={chartPoints.height / 2} x2={chartPoints.width - 20} y2={chartPoints.height / 2} stroke="var(--border-subtle)" strokeDasharray="4" />
                         <line x1="20" y1={chartPoints.height - 20} x2={chartPoints.width - 20} y2={chartPoints.height - 20} stroke="var(--border-subtle)" strokeDasharray="4" />
 
-                        {/* Gradient Area Fill */}
                         <path d={chartPoints.areaD} fill="url(#chartGradient)" />
-
-                        {/* Curve Line */}
                         <path d={chartPoints.pathD} fill="none" stroke="var(--accent-cyan)" strokeWidth="2.5" />
 
-                        {/* Coordinate Points */}
                         {chartPoints.pts.map((p, i) => (
                           <circle key={i} cx={p.x} cy={p.y} r="3" fill="#fff" stroke="var(--accent-cyan)" strokeWidth="2">
                             <title>{`${p.val}°C at ${new Date(p.ts).toLocaleTimeString()}`}</title>
@@ -1261,10 +1599,146 @@ export default function App() {
                   </div>
                 </div>
               )}
+
+              {/* SUBTAB 3: DOWNLINK RPC CONTROL TERMINAL */}
+              {deviceDetailSubTab === 'rpc' && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+                  {/* Send RPC Form */}
+                  <div className="card">
+                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <Terminal size={18} style={{ color: 'var(--accent-amber)' }} />
+                      Execute Remote Procedure Call (RPC)
+                    </h3>
+
+                    <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => { setRpcMethod('setRelay'); setRpcParams('{"relay": 1, "state": true}'); }}
+                      >
+                        setRelay (ON)
+                      </button>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => { setRpcMethod('setRelay'); setRpcParams('{"relay": 1, "state": false}'); }}
+                      >
+                        setRelay (OFF)
+                      </button>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => { setRpcMethod('reboot'); setRpcParams('{"delaySec": 5}'); }}
+                      >
+                        reboot
+                      </button>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => { setRpcMethod('setSamplingInterval'); setRpcParams('{"intervalSec": 10}'); }}
+                      >
+                        setSamplingInterval
+                      </button>
+                    </div>
+
+                    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr auto auto', gap: '12px', alignItems: 'end' }}>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">RPC Method</label>
+                        <input 
+                          type="text" 
+                          className="form-input" 
+                          value={rpcMethod} 
+                          onChange={e => setRpcMethod(e.target.value)} 
+                          placeholder="e.g. setRelay" 
+                        />
+                      </div>
+
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label className="form-label">Parameters (JSON)</label>
+                        <input 
+                          type="text" 
+                          className="form-input font-mono" 
+                          value={rpcParams} 
+                          onChange={e => setRpcParams(e.target.value)} 
+                          placeholder='{"relay": 1, "state": true}' 
+                        />
+                      </div>
+
+                      <button 
+                        className="btn btn-primary" 
+                        style={{ height: '42px' }} 
+                        onClick={() => handleSendRpc(true)} 
+                        disabled={rpcSending}
+                      >
+                        {rpcSending ? <RefreshCw className="animate-spin" size={16} /> : <Send size={16} />}
+                        <span>Two-Way RPC</span>
+                      </button>
+
+                      <button 
+                        className="btn btn-secondary" 
+                        style={{ height: '42px' }} 
+                        onClick={() => handleSendRpc(false)} 
+                        disabled={rpcSending}
+                      >
+                        <span>One-Way</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* RPC History Table */}
+                  <div className="table-container">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Status</th>
+                          <th>Method</th>
+                          <th>Type</th>
+                          <th>Parameters</th>
+                          <th>Response</th>
+                          <th>Timestamp</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rpcCommands.length === 0 ? (
+                          <tr>
+                            <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                              No RPC commands executed for this device yet.
+                            </td>
+                          </tr>
+                        ) : (
+                          rpcCommands.map(cmd => (
+                            <tr key={cmd.id}>
+                              <td>
+                                <span className="badge-tag" style={{
+                                  background: cmd.status === 'SUCCESSFUL' ? 'rgba(16, 185, 129, 0.15)' : cmd.status === 'DELIVERED' ? 'rgba(56, 189, 248, 0.15)' : cmd.status === 'QUEUED' ? 'rgba(245, 158, 11, 0.15)' : 'rgba(244, 63, 94, 0.15)',
+                                  color: cmd.status === 'SUCCESSFUL' ? 'var(--accent-emerald)' : cmd.status === 'DELIVERED' ? 'var(--accent-cyan)' : cmd.status === 'QUEUED' ? 'var(--accent-amber)' : 'var(--accent-rose)'
+                                }}>
+                                  {cmd.status}
+                                </span>
+                              </td>
+                              <td style={{ fontWeight: 600, color: '#fff' }}>
+                                {cmd.method}
+                              </td>
+                              <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                {cmd.two_way ? 'Two-Way (Sync)' : 'One-Way (Async)'}
+                              </td>
+                              <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
+                                {typeof cmd.params === 'object' ? JSON.stringify(cmd.params) : String(cmd.params)}
+                              </td>
+                              <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)' }}>
+                                {cmd.response ? (typeof cmd.response === 'object' ? JSON.stringify(cmd.response) : String(cmd.response)) : '--'}
+                              </td>
+                              <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                                {new Date(cmd.created_time).toLocaleTimeString()}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </>
           )}
 
-          {/* TAB 4: ALARMS MANAGEMENT */}
+          {/* TAB 5: ALARMS MANAGEMENT */}
           {activeTab === 'alarms' && (
             <>
               <div className="page-header">
@@ -1373,7 +1847,7 @@ export default function App() {
             </>
           )}
 
-          {/* TAB 5: SYSTEM HEALTH */}
+          {/* TAB 6: SYSTEM HEALTH */}
           {activeTab === 'system' && (
             <>
               <div className="page-header">
@@ -1424,6 +1898,21 @@ export default function App() {
                 </div>
               </div>
             </>
+          )}
+
+          {/* TAB 7: INTEGRATIONS & CONVERTERS */}
+          {activeTab === 'integrations' && (
+            <IntegrationsView />
+          )}
+
+          {/* TAB 8: SCADA PROCESS STUDIO & HMI */}
+          {activeTab === 'scada' && (
+            <ScadaView />
+          )}
+
+          {/* TAB 9: EDGE FLEET */}
+          {activeTab === 'edge' && (
+            <EdgeView />
           )}
         </div>
       </main>
@@ -1487,6 +1976,47 @@ export default function App() {
                 <button type="submit" className="btn btn-primary" disabled={createLoading}>
                   {createLoading ? <RefreshCw className="animate-spin" size={16} /> : <Check size={16} />}
                   <span>Provision Device</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* CREATE DASHBOARD MODAL */}
+      {showCreateDashModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="modal-header">
+              <h3 className="modal-title">Create Realtime Dashboard</h3>
+              <button 
+                onClick={() => setShowCreateDashModal(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateDashboard}>
+              <div className="form-group">
+                <label className="form-label">Dashboard Title *</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  placeholder="e.g. Main Plant Operations Canvas" 
+                  value={newDashTitle} 
+                  onChange={e => setNewDashTitle(e.target.value)} 
+                  required 
+                />
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowCreateDashModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn btn-primary">
+                  <Check size={16} />
+                  <span>Create Canvas</span>
                 </button>
               </div>
             </form>

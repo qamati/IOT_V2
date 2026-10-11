@@ -235,6 +235,280 @@ class ApiClient {
   async clearAlarm(alarmId: string): Promise<Alarm> {
     return this.request<Alarm>(`/alarms/${alarmId}/clear`, { method: 'POST' });
   }
+
+  // Dashboards
+  async listDashboards(page = 1, pageSize = 50): Promise<{ data: Dashboard[]; total: number }> {
+    return this.request<{ data: Dashboard[]; total: number }>(`/dashboards?page=${page}&pageSize=${pageSize}`);
+  }
+
+  async getDashboard(id: string): Promise<Dashboard> {
+    return this.request<Dashboard>(`/dashboards/${id}`);
+  }
+
+  async createDashboard(title: string, configuration: any): Promise<Dashboard> {
+    return this.request<Dashboard>('/dashboards', {
+      method: 'POST',
+      body: JSON.stringify({ title, configuration }),
+    });
+  }
+
+  async deleteDashboard(id: string): Promise<void> {
+    await this.request(`/dashboards/${id}`, { method: 'DELETE' });
+  }
+
+  // Downlink RPC
+  async sendOneWayRpc(deviceId: string, method: string, params: any): Promise<RpcCommand> {
+    return this.request<RpcCommand>(`/plugins/rpc/oneway/DEVICE/${deviceId}`, {
+      method: 'POST',
+      body: JSON.stringify({ method, params }),
+    });
+  }
+
+  async sendTwoWayRpc(deviceId: string, method: string, params: any, timeoutMs = 3000): Promise<RpcCommand> {
+    return this.request<RpcCommand>(`/plugins/rpc/twoway/DEVICE/${deviceId}?timeout=${timeoutMs}`, {
+      method: 'POST',
+      body: JSON.stringify({ method, params }),
+    });
+  }
+
+  async getRpcHistory(deviceId: string): Promise<{ data: RpcCommand[]; total: number }> {
+    return this.request<{ data: RpcCommand[]; total: number }>(`/plugins/rpc/DEVICE/${deviceId}`);
+  }
+
+  // Device-side RPC polling & response simulation
+  async pollDeviceRpc(deviceToken: string): Promise<RpcCommand | null> {
+    const res = await fetch(`${BASE_URL}/${deviceToken}/rpc`);
+    if (res.status === 204) return null;
+    if (!res.ok) return null;
+    return res.json();
+  }
+
+  async respondDeviceRpc(deviceToken: string, requestId: string, response: any): Promise<void> {
+    await fetch(`${BASE_URL}/${deviceToken}/rpc/${requestId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(response),
+    });
+  }
+
+  // --- Stage 8: Integrations & Converters ---
+  async listConverters(): Promise<Converter[]> {
+    return this.request<Converter[]>('/converters');
+  }
+
+  async testConverter(converter: Converter, payload: string, metadata: Record<string, string> = {}): Promise<{ success: boolean; event: any }> {
+    return this.request<{ success: boolean; event: any }>('/converters/test', {
+      method: 'POST',
+      body: JSON.stringify({ converter, payload, metadata }),
+    });
+  }
+
+  async listIntegrations(): Promise<Integration[]> {
+    return this.request<Integration[]>('/integrations');
+  }
+
+  async getIntegrationStatus(id: string): Promise<IntegrationStatus> {
+    return this.request<IntegrationStatus>(`/integrations/${id}/status`);
+  }
+
+  async getIntegrationDebug(id: string): Promise<DebugEvent[]> {
+    return this.request<DebugEvent[]>(`/integrations/${id}/debug`);
+  }
+
+  async sendIntegrationWebhook(routingKey: string, payload: any): Promise<any> {
+    const res = await fetch(`${BASE_URL}/integrations/webhook/${routingKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    });
+    return res.json();
+  }
+
+  // --- Stage 9: Edge Fleet ---
+  async listEdgeNodes(): Promise<EdgeNode[]> {
+    return this.request<EdgeNode[]>('/edge');
+  }
+
+  async triggerEdgeSync(batch: any): Promise<any> {
+    const res = await fetch(`${BASE_URL}/edge/sync`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(batch),
+    });
+    return res.json();
+  }
+
+  // --- Stage 10: SCADA ---
+  async listScadaTags(): Promise<ScadaTag[]> {
+    return this.request<ScadaTag[]>('/scada/tags');
+  }
+
+  async updateScadaTag(path: string, value: any, quality = 'GOOD'): Promise<{ tag: ScadaTag; emitted: boolean }> {
+    return this.request<{ tag: ScadaTag; emitted: boolean }>('/scada/tags/update', {
+      method: 'POST',
+      body: JSON.stringify({ path, value, quality }),
+    });
+  }
+
+  async listScadaAlarms(): Promise<ISA182Alarm[]> {
+    return this.request<ISA182Alarm[]>('/scada/alarms');
+  }
+
+  async ackScadaAlarm(id: string): Promise<ISA182Alarm> {
+    return this.request<ISA182Alarm>(`/scada/alarms/${id}/ack`, { method: 'POST' });
+  }
+
+  async shelveScadaAlarm(id: string, durationMs = 300000): Promise<ISA182Alarm> {
+    return this.request<ISA182Alarm>(`/scada/alarms/${id}/shelve`, {
+      method: 'POST',
+      body: JSON.stringify({ duration_ms: durationMs }),
+    });
+  }
+
+  async selectScadaControl(tagPath: string, desiredValue: any): Promise<ControlCommand> {
+    return this.request<ControlCommand>('/scada/control/select', {
+      method: 'POST',
+      body: JSON.stringify({ tag_path: tagPath, desired_value: desiredValue }),
+    });
+  }
+
+  async operateScadaControl(selectId: string): Promise<ControlCommand> {
+    return this.request<ControlCommand>('/scada/control/operate', {
+      method: 'POST',
+      body: JSON.stringify({ select_id: selectId }),
+    });
+  }
+}
+
+export interface Dashboard {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  title: string;
+  configuration: {
+    deviceId?: string;
+    widgets?: Array<{
+      id: string;
+      type: string;
+      title: string;
+      key?: string;
+      unit?: string;
+      method?: string;
+    }>;
+  };
+}
+
+export interface RpcCommand {
+  id: string;
+  tenant_id: string;
+  device_id: string;
+  method: string;
+  params: any;
+  two_way: boolean;
+  status: 'QUEUED' | 'DELIVERED' | 'SUCCESSFUL' | 'TIMEOUT' | 'FAILED';
+  created_time: number;
+  response_time?: number;
+  response?: any;
+}
+
+export interface Converter {
+  id: string;
+  tenant_id: string;
+  name: string;
+  direction: 'UPLINK' | 'DOWNLINK';
+  mode: 'DECLARATIVE' | 'EXPRESSION';
+  definition: any;
+  version: number;
+}
+
+export interface Integration {
+  id: string;
+  tenant_id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  uplink_converter_id: string;
+  routing_key: string;
+  allow_create_device: boolean;
+  default_device_type: string;
+}
+
+export interface IntegrationStatus {
+  integration_id: string;
+  state: 'RUNNING' | 'STOPPED' | 'ERROR';
+  last_error?: string;
+  last_ok_ts: number;
+  counters: {
+    rx_events: number;
+    tx_events: number;
+    errors: number;
+    auto_created: number;
+  };
+  instance: string;
+}
+
+export interface DebugEvent {
+  id: string;
+  ts: number;
+  direction: string;
+  payload: string;
+  metadata: Record<string, string>;
+  success: boolean;
+  error?: string;
+  result?: any;
+}
+
+export interface EdgeNode {
+  id: string;
+  tenant_id: string;
+  name: string;
+  edge_key: string;
+  status: 'ONLINE' | 'OFFLINE' | 'SYNCING';
+  firmware_version: string;
+  hardware_model: string;
+  last_sync_ts: number;
+  backlog_count: number;
+}
+
+export interface ScadaTag {
+  id: string;
+  tenant_id: string;
+  path: string;
+  data_type: 'ANALOG' | 'DISCRETE' | 'STRING';
+  eng_unit?: string;
+  deadband?: number;
+  value: any;
+  last_value?: any;
+  quality: string;
+  timestamp: number;
+}
+
+export interface ISA182Alarm {
+  id: string;
+  tenant_id: string;
+  tag_path: string;
+  alarm_type: string;
+  setpoint: number;
+  severity: string;
+  state: string;
+  active_ts: number;
+  ack_ts?: number;
+  ack_user?: string;
+  shelve_until?: number;
+  message: string;
+}
+
+export interface ControlCommand {
+  select_id: string;
+  tenant_id: string;
+  tag_path: string;
+  desired_value: any;
+  operator: string;
+  selected_at: number;
+  operated_at?: number;
+  status: 'SELECTED' | 'OPERATED' | 'CANCELLED' | 'INTERLOCK_DENIED';
+  reason?: string;
 }
 
 export const api = new ApiClient();
+

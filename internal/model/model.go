@@ -180,3 +180,38 @@ type DeviceActivity struct {
 	LastActivityTime int64  `json:"last_activity_time"`
 	Active           bool   `json:"active"`
 }
+
+// Dashboard represents an analytical visualization canvas.
+type Dashboard struct {
+	ID            ids.ID          `json:"id"`
+	CreatedTime   int64           `json:"created_time"`
+	TenantID      ids.ID          `json:"tenant_id"`
+	Title         string          `json:"title"`
+	Image         string          `json:"image,omitempty"`
+	Configuration json.RawMessage `json:"configuration"`
+}
+
+// RpcStatus tracks lifecycle of a device downlink command.
+type RpcStatus string
+
+const (
+	RpcStatusQueued     RpcStatus = "QUEUED"
+	RpcStatusDelivered  RpcStatus = "DELIVERED"
+	RpcStatusSuccessful RpcStatus = "SUCCESSFUL"
+	RpcStatusTimeout    RpcStatus = "TIMEOUT"
+	RpcStatusFailed     RpcStatus = "FAILED"
+)
+
+// RpcCommand represents a server-to-device remote procedure call.
+type RpcCommand struct {
+	ID           ids.ID          `json:"id"`
+	TenantID     ids.ID          `json:"tenant_id"`
+	DeviceID     ids.ID          `json:"device_id"`
+	Method       string          `json:"method"`
+	Params       json.RawMessage `json:"params"`
+	TwoWay       bool            `json:"two_way"`
+	Status       RpcStatus       `json:"status"`
+	CreatedTime  int64           `json:"created_time"`
+	ResponseTime int64           `json:"response_time,omitempty"`
+	Response     json.RawMessage `json:"response,omitempty"`
+}

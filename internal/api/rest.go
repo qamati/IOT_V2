@@ -13,9 +13,14 @@ import (
 	"github.com/go-chi/cors"
 	"github.com/qamati/IOT_V2/internal/alarm"
 	"github.com/qamati/IOT_V2/internal/core"
+	"github.com/qamati/IOT_V2/internal/dashboard"
 	"github.com/qamati/IOT_V2/internal/devstate"
+	"github.com/qamati/IOT_V2/internal/edge"
 	"github.com/qamati/IOT_V2/internal/identity"
+	"github.com/qamati/IOT_V2/internal/integration"
 	"github.com/qamati/IOT_V2/internal/model"
+	"github.com/qamati/IOT_V2/internal/rpc"
+	"github.com/qamati/IOT_V2/internal/scada"
 	"github.com/qamati/IOT_V2/internal/telemetry"
 	"github.com/qamati/IOT_V2/pkg/bus"
 	"github.com/qamati/IOT_V2/pkg/errs"
@@ -24,26 +29,40 @@ import (
 
 // API encapsulates the REST API router and handlers.
 type API struct {
-	router     chi.Router
-	identity   *identity.Service
-	devManager *core.DeviceManager
-	telemetry  telemetry.Store
-	attributes telemetry.AttributeStore
-	tracker    devstate.Tracker
-	alarms     alarm.Service
-	bus        bus.Bus
+	router       chi.Router
+	identity     *identity.Service
+	devManager   *core.DeviceManager
+	telemetry    telemetry.Store
+	attributes   telemetry.AttributeStore
+	tracker      devstate.Tracker
+	alarms       alarm.Service
+	dashboards   dashboard.Service
+	rpcSvc       rpc.Service
+	integrations integration.Service
+	edgeHub      edge.Service
+	scadaSvc     scada.Service
+	bus          bus.Bus
 }
 
 func NewAPI(idSvc *identity.Service, devMgr *core.DeviceManager, tsStore telemetry.Store, b bus.Bus) *API {
+	attrs := telemetry.NewMemoryAttributeStore()
+	tracker := devstate.NewMemoryTracker(60 * time.Second)
+	alarmSvc := alarm.NewMemoryService()
+
 	a := &API{
-		router:     chi.NewRouter(),
-		identity:   idSvc,
-		devManager: devMgr,
-		telemetry:  tsStore,
-		attributes: telemetry.NewMemoryAttributeStore(),
-		tracker:    devstate.NewMemoryTracker(60 * time.Second),
-		alarms:     alarm.NewMemoryService(),
-		bus:        b,
+		router:       chi.NewRouter(),
+		identity:     idSvc,
+		devManager:   devMgr,
+		telemetry:    tsStore,
+		attributes:   attrs,
+		tracker:      tracker,
+		alarms:       alarmSvc,
+		dashboards:   dashboard.NewMemoryService(),
+		rpcSvc:       rpc.NewMemoryService(),
+		integrations: integration.NewMemoryService(devMgr, tsStore, attrs, tracker, nil),
+		edgeHub:      edge.NewMemoryHub(tsStore, alarmSvc),
+		scadaSvc:     scada.NewMemoryService(),
+		bus:          b,
 	}
 
 	a.setupMiddleware()
@@ -63,6 +82,31 @@ func (a *API) WithTracker(t devstate.Tracker) *API {
 
 func (a *API) WithAlarms(al alarm.Service) *API {
 	a.alarms = al
+	return a
+}
+
+func (a *API) WithDashboards(d dashboard.Service) *API {
+	a.dashboards = d
+	return a
+}
+
+func (a *API) WithRPC(r rpc.Service) *API {
+	a.rpcSvc = r
+	return a
+}
+
+func (a *API) WithIntegrations(i integration.Service) *API {
+	a.integrations = i
+	return a
+}
+
+func (a *API) WithEdge(e edge.Service) *API {
+	a.edgeHub = e
+	return a
+}
+
+func (a *API) WithScada(s scada.Service) *API {
+	a.scadaSvc = s
 	return a
 }
 
@@ -89,6 +133,12 @@ func (a *API) setupRoutes() {
 		// Public Auth
 		r.Post("/auth/login", a.handleLogin)
 
+		// Public Integration Webhook Endpoint
+		r.Post("/integrations/webhook/{routingKey}", a.handleIntegrationWebhook)
+
+		// Public Edge Node Store-and-Forward Sync Endpoint
+		r.Post("/edge/sync", a.handleEdgeSync)
+
 		// Device wire-compatible HTTP endpoints:
 		// 1. Telemetry upload: POST /api/v1/{token}/telemetry
 		r.Post("/{token}/telemetry", a.handleDeviceTelemetryUpload)
@@ -96,6 +146,10 @@ func (a *API) setupRoutes() {
 		r.Post("/{token}/attributes", a.handleDeviceAttributesUpload)
 		// 3. Attributes query: GET /api/v1/{token}/attributes
 		r.Get("/{token}/attributes", a.handleDeviceAttributesGet)
+		// 4. Device RPC polling: GET /api/v1/{token}/rpc
+		r.Get("/{token}/rpc", a.handleDeviceRpcPoll)
+		// 5. Device RPC response: POST /api/v1/{token}/rpc/{requestId}
+		r.Post("/{token}/rpc/{requestId}", a.handleDeviceRpcResponse)
 
 		// Protected management endpoints
 		r.Group(func(protected chi.Router) {
@@ -123,6 +177,48 @@ func (a *API) setupRoutes() {
 			protected.Get("/alarms", a.handleListAlarms)
 			protected.Post("/alarms/{id}/ack", a.handleAckAlarm)
 			protected.Post("/alarms/{id}/clear", a.handleClearAlarm)
+
+			// Dashboard management
+			protected.Post("/dashboards", a.handleCreateDashboard)
+			protected.Get("/dashboards", a.handleListDashboards)
+			protected.Get("/dashboards/{id}", a.handleGetDashboard)
+			protected.Put("/dashboards/{id}", a.handleUpdateDashboard)
+			protected.Delete("/dashboards/{id}", a.handleDeleteDashboard)
+
+			// Downlink RPC
+			protected.Post("/plugins/rpc/oneway/DEVICE/{id}", a.handleSendOneWayRpc)
+			protected.Post("/plugins/rpc/twoway/DEVICE/{id}", a.handleSendTwoWayRpc)
+			protected.Get("/plugins/rpc/DEVICE/{id}", a.handleGetDeviceRpcHistory)
+
+			// Stage 8: Converters & Integrations
+			protected.Get("/converters", a.handleListConverters)
+			protected.Post("/converters", a.handleCreateConverter)
+			protected.Get("/converters/{id}", a.handleGetConverter)
+			protected.Delete("/converters/{id}", a.handleDeleteConverter)
+			protected.Post("/converters/test", a.handleTestConverter)
+
+			protected.Get("/integrations", a.handleListIntegrations)
+			protected.Post("/integrations", a.handleCreateIntegration)
+			protected.Get("/integrations/{id}", a.handleGetIntegration)
+			protected.Delete("/integrations/{id}", a.handleDeleteIntegration)
+			protected.Get("/integrations/{id}/status", a.handleGetIntegrationStatus)
+			protected.Get("/integrations/{id}/debug", a.handleGetIntegrationDebug)
+
+			// Stage 9: Edge Fleet Management
+			protected.Get("/edge", a.handleListEdgeNodes)
+			protected.Post("/edge", a.handleCreateEdgeNode)
+			protected.Get("/edge/{id}", a.handleGetEdgeNode)
+			protected.Delete("/edge/{id}", a.handleDeleteEdgeNode)
+
+			// Stage 10: SCADA Tags, Process Alarms & SBO Control
+			protected.Get("/scada/tags", a.handleListScadaTags)
+			protected.Post("/scada/tags", a.handleRegisterScadaTag)
+			protected.Post("/scada/tags/update", a.handleUpdateScadaTag)
+			protected.Get("/scada/alarms", a.handleListScadaAlarms)
+			protected.Post("/scada/alarms/{id}/ack", a.handleAckScadaAlarm)
+			protected.Post("/scada/alarms/{id}/shelve", a.handleShelveScadaAlarm)
+			protected.Post("/scada/control/select", a.handleSelectScadaControl)
+			protected.Post("/scada/control/operate", a.handleOperateScadaControl)
 		})
 	})
 }
@@ -745,4 +841,316 @@ func (a *API) handleClearAlarm(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(alarm)
+}
+
+// 17. GET /api/v1/{token}/rpc (Device checks for pending downlink RPCs)
+func (a *API) handleDeviceRpcPoll(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	creds, err := a.devManager.AuthenticateToken(r.Context(), token)
+	if err != nil {
+		errs.WriteHTTP(w, errs.Unauthorized("invalid device token"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	cmd, err := a.rpcSvc.GetPendingDeviceRpc(r.Context(), creds.DeviceID)
+	if err != nil {
+		errs.WriteHTTP(w, errs.Internal("failed to poll rpc", err), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if cmd == nil {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(cmd)
+}
+
+// 18. POST /api/v1/{token}/rpc/{requestId} (Device returns execution result)
+func (a *API) handleDeviceRpcResponse(w http.ResponseWriter, r *http.Request) {
+	token := chi.URLParam(r, "token")
+	creds, err := a.devManager.AuthenticateToken(r.Context(), token)
+	if err != nil {
+		errs.WriteHTTP(w, errs.Unauthorized("invalid device token"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	reqID, err := ids.Parse(chi.URLParam(r, "requestId"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid request id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("failed to read body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.rpcSvc.DeliverRpcResponse(r.Context(), creds.DeviceID, reqID, body); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+// 19. POST /api/v1/dashboards
+type createDashboardReq struct {
+	Title         string          `json:"title"`
+	Configuration json.RawMessage `json:"configuration"`
+}
+
+func (a *API) handleCreateDashboard(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	var req createDashboardReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid json body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	d, err := a.dashboards.CreateDashboard(r.Context(), tenantID, req.Title, req.Configuration)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(d)
+}
+
+// 20. GET /api/v1/dashboards
+func (a *API) handleListDashboards(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+
+	list, total, err := a.dashboards.ListDashboards(r.Context(), tenantID, page, pageSize)
+	if err != nil {
+		errs.WriteHTTP(w, errs.Internal("failed to list dashboards", err), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"data":     list,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
+}
+
+// 21. GET /api/v1/dashboards/{id}
+func (a *API) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	dashID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid dashboard id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	d, err := a.dashboards.GetDashboard(r.Context(), tenantID, dashID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(d)
+}
+
+// 22. PUT /api/v1/dashboards/{id}
+func (a *API) handleUpdateDashboard(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	dashID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid dashboard id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	var req createDashboardReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid json body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	d, err := a.dashboards.UpdateDashboard(r.Context(), tenantID, dashID, req.Title, req.Configuration)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(d)
+}
+
+// 23. DELETE /api/v1/dashboards/{id}
+func (a *API) handleDeleteDashboard(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	dashID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid dashboard id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.dashboards.DeleteDashboard(r.Context(), tenantID, dashID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "DELETED"})
+}
+
+// 24. POST /api/v1/plugins/rpc/oneway/DEVICE/{id}
+type sendRpcReq struct {
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
+}
+
+func (a *API) handleSendOneWayRpc(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	deviceID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid device id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if _, err := a.devManager.GetDevice(r.Context(), tenantID, deviceID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	var req sendRpcReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid json body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	cmd, err := a.rpcSvc.SendOneWayRpc(r.Context(), tenantID, deviceID, req.Method, req.Params)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(cmd)
+}
+
+// 25. POST /api/v1/plugins/rpc/twoway/DEVICE/{id}
+func (a *API) handleSendTwoWayRpc(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	deviceID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid device id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if _, err := a.devManager.GetDevice(r.Context(), tenantID, deviceID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	var req sendRpcReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid json body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	timeoutMs, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
+	timeout := 5 * time.Second
+	if timeoutMs > 0 {
+		timeout = time.Duration(timeoutMs) * time.Millisecond
+	}
+
+	cmd, err := a.rpcSvc.SendTwoWayRpc(r.Context(), tenantID, deviceID, req.Method, req.Params, timeout)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(cmd)
+}
+
+// 26. GET /api/v1/plugins/rpc/DEVICE/{id}
+func (a *API) handleGetDeviceRpcHistory(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	deviceID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid device id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if _, err := a.devManager.GetDevice(r.Context(), tenantID, deviceID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("pageSize"))
+
+	cmds, total, err := a.rpcSvc.ListDeviceRpcHistory(r.Context(), tenantID, deviceID, page, pageSize)
+	if err != nil {
+		errs.WriteHTTP(w, errs.Internal("failed to fetch rpc history", err), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"data":     cmds,
+		"total":    total,
+		"page":     page,
+		"pageSize": pageSize,
+	})
 }

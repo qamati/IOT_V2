@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,10 +13,15 @@ import (
 	"github.com/qamati/IOT_V2/internal/alarm"
 	"github.com/qamati/IOT_V2/internal/api"
 	"github.com/qamati/IOT_V2/internal/core"
+	"github.com/qamati/IOT_V2/internal/dashboard"
 	"github.com/qamati/IOT_V2/internal/devstate"
+	"github.com/qamati/IOT_V2/internal/edge"
 	"github.com/qamati/IOT_V2/internal/identity"
+	"github.com/qamati/IOT_V2/internal/integration"
 	"github.com/qamati/IOT_V2/internal/model"
+	"github.com/qamati/IOT_V2/internal/rpc"
 	"github.com/qamati/IOT_V2/internal/rule"
+	"github.com/qamati/IOT_V2/internal/scada"
 	"github.com/qamati/IOT_V2/internal/telemetry"
 	transportmqtt "github.com/qamati/IOT_V2/internal/transport/mqtt"
 	"github.com/qamati/IOT_V2/pkg/bus"
@@ -126,11 +132,31 @@ func main() {
 	// 3. Core Device Manager
 	devMgr := core.NewDeviceManager(devStore, []byte(cfg.Pepper))
 
-	// 4. Extended Platform Services: Attributes, DevState, Alarms, Rule Engine
+	// 4. Extended Platform Services: Attributes, DevState, Alarms, Rule Engine, Dashboards, RPC
 	attrStore := telemetry.NewMemoryAttributeStore()
 	tracker := devstate.NewMemoryTracker(60 * time.Second)
 	alarmSvc := alarm.NewMemoryService()
 	ruleEngine := rule.NewEngine(alarmSvc, logger)
+	dashboardSvc := dashboard.NewMemoryService()
+	rpcSvc := rpc.NewMemoryService()
+	integrationSvc := integration.NewMemoryService(devMgr, tsStore, attrStore, tracker, ruleEngine)
+	edgeHub := edge.NewMemoryHub(tsStore, alarmSvc)
+	scadaSvc := scada.NewMemoryService()
+
+	// Seed demo webhook integration
+	convs, _ := integrationSvc.ListConverters(ctx, demoTenantID)
+	if len(convs) > 0 {
+		_ = integrationSvc.CreateIntegration(ctx, &integration.Integration{
+			TenantID:          demoTenantID,
+			Name:              "Acme Weather Webhook",
+			Type:              integration.TypeHTTPWebhook,
+			Enabled:           true,
+			UplinkConverterID: convs[0].ID,
+			RoutingKey:        "acme-weather-wh",
+			AllowCreateDevice: true,
+			DefaultDeviceType: "weather_station",
+		})
+	}
 
 	// Seed sample device
 	sampleDev, _, _ := devMgr.CreateDevice(ctx, demoTenantID, "weather-station-alpha", "Building A Rooftop Sensor", "DEV_ALPHA_TOKEN_123")
@@ -154,6 +180,18 @@ func main() {
 			"low_power_mode":      false,
 		})
 		tracker.RecordActivity(ctx, sampleDev.ID, time.Now().UnixMilli())
+
+		// Seed a default Live Dashboard
+		dashConfig, _ := json.Marshal(map[string]any{
+			"deviceId": sampleDev.ID.String(),
+			"widgets": []map[string]any{
+				{"id": "w1", "type": "metric_card", "title": "Ambient Temperature", "key": "temperature", "unit": "°C"},
+				{"id": "w2", "type": "metric_card", "title": "Relative Humidity", "key": "humidity", "unit": "%"},
+				{"id": "w3", "type": "timeseries_chart", "title": "Temperature Trend", "key": "temperature"},
+				{"id": "w4", "type": "rpc_control", "title": "Relay Switch #1", "method": "setRelay"},
+			},
+		})
+		_, _ = dashboardSvc.CreateDashboard(ctx, demoTenantID, "Environmental Station Alpha Dashboard", dashConfig)
 	}
 
 	// 5. Message Bus & Direct-Save Worker with Rule Engine & Activity Hook
@@ -187,7 +225,12 @@ func main() {
 	apiSvc := api.NewAPI(idSvc, devMgr, tsStore, b).
 		WithAttributes(attrStore).
 		WithTracker(tracker).
-		WithAlarms(alarmSvc)
+		WithAlarms(alarmSvc).
+		WithDashboards(dashboardSvc).
+		WithRPC(rpcSvc).
+		WithIntegrations(integrationSvc).
+		WithEdge(edgeHub).
+		WithScada(scadaSvc)
 
 	// 8. Base Service Supervisor
 	s := svc.New(cfg.Service.Name, cfg.Service, logger)
