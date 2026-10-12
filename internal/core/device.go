@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"sync"
 	"time"
 
@@ -199,12 +200,13 @@ func (p *PostgresDeviceStore) GetOrCreateDefaultProfile(ctx context.Context, ten
 		Version:       1,
 	}
 
-	_, err = p.pool.Exec(ctx, `
+	row = p.pool.QueryRow(ctx, `
 		INSERT INTO device_profile (id, created_time, tenant_id, name, transport_type, is_default, profile_data, version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		ON CONFLICT (tenant_id, name) DO NOTHING
+		ON CONFLICT (tenant_id, name) DO UPDATE SET is_default = EXCLUDED.is_default
+		RETURNING id, created_time, transport_type, is_default, profile_data, version
 	`, prof.ID, prof.CreatedTime, prof.TenantID, prof.Name, prof.TransportType, prof.IsDefault, prof.ProfileData, prof.Version)
-	if err != nil {
+	if err := row.Scan(&prof.ID, &prof.CreatedTime, &prof.TransportType, &prof.IsDefault, &prof.ProfileData, &prof.Version); err != nil {
 		return nil, err
 	}
 	return &prof, nil
@@ -217,7 +219,7 @@ func (p *PostgresDeviceStore) CreateDevice(ctx context.Context, d *model.Device,
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		`, d.ID, d.CreatedTime, d.TenantID, d.DeviceProfileID, d.Name, d.Label, d.IsGateway, d.Tags, d.Version)
 		if err != nil {
-			return errs.Conflict("device with this name already exists in tenant")
+			return fmt.Errorf("failed to insert device: %w", err)
 		}
 
 		if creds != nil {

@@ -23,20 +23,23 @@ import {
   Sparkles,
   AlertTriangle,
   Bell,
-  CheckCircle,
-  XCircle,
   Tag,
   LayoutDashboard,
   Power,
   Share2,
   Gauge,
-  Network
+  Network,
+  GitMerge,
+  ExternalLink
 } from 'lucide-react';
 import { api } from './api';
-import type { Device, User, TelemetryMap, AttributeKv, Alarm, DeviceActivity, Dashboard, RpcCommand } from './api';
+import { realtime } from './realtime';
+import type { Device, User, TelemetryMap, AttributeKv, Alarm, DeviceActivity, Dashboard, RpcCommand, NotificationItem } from './api';
 import { IntegrationsView } from './components/IntegrationsView';
 import { ScadaView } from './components/ScadaView';
 import { EdgeView } from './components/EdgeView';
+import { RuleEngineView } from './components/RuleEngineView';
+import { AlarmsView } from './components/AlarmsView';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(api.getToken());
@@ -45,8 +48,8 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Navigation: overview, devices, device-detail, dashboards, alarms, system, integrations, scada, edge
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'dashboards' | 'alarms' | 'system' | 'integrations' | 'scada' | 'edge'>('devices');
+  // Navigation: overview, devices, device-detail, dashboards, alarms, system, integrations, scada, edge, rules
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'dashboards' | 'alarms' | 'system' | 'integrations' | 'scada' | 'edge' | 'rules'>('devices');
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceDetailSubTab, setDeviceDetailSubTab] = useState<'telemetry' | 'attributes' | 'rpc'>('telemetry');
 
@@ -84,7 +87,12 @@ export default function App() {
 
   // Alarms State
   const [alarms, setAlarms] = useState<Alarm[]>([]);
-  const [alarmsLoading, setAlarmsLoading] = useState(false);
+  const [_alarmsLoading, setAlarmsLoading] = useState(false);
+
+  // Notification Inbox State
+  const [showInboxDropdown, setShowInboxDropdown] = useState(false);
+  const [inboxNotifications, setInboxNotifications] = useState<NotificationItem[]>([]);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
 
   // Dashboards State
   const [dashboards, setDashboards] = useState<Dashboard[]>([]);
@@ -182,13 +190,43 @@ export default function App() {
     }
   };
 
+  const loadInbox = async () => {
+    if (!token) return;
+    try {
+      const res = await api.listInbox(10, 0);
+      setInboxNotifications(res.data || []);
+      setUnreadNotifCount(res.unread_count || 0);
+    } catch (err) {
+      console.error('Failed to load inbox:', err);
+    }
+  };
+
   useEffect(() => {
     if (token) {
       loadDevices();
       loadAlarms();
+      loadInbox();
       loadDashboards();
-      const interval = setInterval(loadAlarms, 5000);
-      return () => clearInterval(interval);
+
+      // Connect to Stage 6 Realtime WebSocket Gateway
+      realtime.connect(token);
+      realtime.subscribeAlarms(10);
+      realtime.subscribeNotifications(11);
+
+      const unsubAlarm = realtime.onAlarm((newAlarm) => {
+        setAlarms((prev) => [newAlarm, ...prev.filter((a) => a.id !== newAlarm.id)]);
+      });
+
+      const unsubNotif = realtime.onNotification((newNotif) => {
+        setInboxNotifications((prev) => [newNotif, ...prev]);
+        setUnreadNotifCount((c) => c + 1);
+      });
+
+      return () => {
+        unsubAlarm();
+        unsubNotif();
+        realtime.disconnect();
+      };
     }
   }, [token]);
 
@@ -224,30 +262,46 @@ export default function App() {
     }
   };
 
-  // Poll device data when on detail page or dashboard
+  // Realtime telemetry streaming when on detail page or dashboard
   useEffect(() => {
+    let targetDevId: string | null = null;
     if (activeTab === 'device-detail' && selectedDeviceId) {
-      loadDeviceData(selectedDeviceId);
-
-      if (autoRefresh) {
-        const interval = setInterval(() => {
-          loadDeviceData(selectedDeviceId);
-        }, 2000);
-        return () => clearInterval(interval);
-      }
+      targetDevId = selectedDeviceId;
     } else if (activeTab === 'dashboards' && devices.length > 0) {
-      const targetDevId = selectedDashboard?.configuration?.deviceId || devices[0]?.id;
-      if (targetDevId) {
-        loadDeviceData(targetDevId);
-        if (autoRefresh) {
-          const interval = setInterval(() => {
-            loadDeviceData(targetDevId);
-          }, 2000);
-          return () => clearInterval(interval);
-        }
-      }
+      targetDevId = selectedDashboard?.configuration?.deviceId || devices[0]?.id;
     }
-  }, [activeTab, selectedDeviceId, selectedDashboard, autoRefresh, devices]);
+
+    if (targetDevId) {
+      loadDeviceData(targetDevId);
+
+      // Subscribe via WebSocket
+      realtime.subscribeTelemetry(20, targetDevId);
+      const unsubTelemetry = realtime.onTelemetry((devId, data, ts) => {
+        if (devId === targetDevId) {
+          setLatestTelemetry((prev) => {
+            const updated = { ...prev };
+            for (const [k, v] of Object.entries(data)) {
+              updated[k] = [{ ts, value: v }];
+            }
+            return updated;
+          });
+          setTimeseriesData((prev) => {
+            const updated = { ...prev };
+            for (const [k, v] of Object.entries(data)) {
+              const existing = updated[k] || [];
+              updated[k] = [...existing.slice(-99), { ts, value: v }];
+            }
+            return updated;
+          });
+        }
+      });
+
+      return () => {
+        realtime.unsubscribe(20);
+        unsubTelemetry();
+      };
+    }
+  }, [activeTab, selectedDeviceId, selectedDashboard, devices]);
 
   // Simulator streamer
   useEffect(() => {
@@ -700,6 +754,13 @@ export default function App() {
             <span>Edge Fleet</span>
           </li>
           <li 
+            className={`nav-item ${activeTab === 'rules' ? 'active' : ''}`}
+            onClick={() => setActiveTab('rules')}
+          >
+            <GitMerge size={18} />
+            <span>Rule Engine</span>
+          </li>
+          <li 
             className={`nav-item ${activeTab === 'system' ? 'active' : ''}`}
             onClick={() => setActiveTab('system')}
           >
@@ -743,7 +804,7 @@ export default function App() {
             </span>
           </div>
 
-          <div className="topbar-right">
+          <div className="topbar-right" style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
             {activeAlarmCount > 0 && (
               <div 
                 className="badge-tag" 
@@ -754,6 +815,160 @@ export default function App() {
                 {activeAlarmCount} Active Alert{activeAlarmCount > 1 ? 's' : ''}
               </div>
             )}
+
+            {/* Notification Bell with Inbox Dropdown */}
+            <div style={{ position: 'relative' }}>
+              <button
+                className="btn btn-secondary"
+                style={{
+                  padding: '6px 8px',
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  background: showInboxDropdown ? 'rgba(56, 189, 248, 0.15)' : undefined,
+                  borderColor: showInboxDropdown ? 'var(--accent-cyan)' : undefined,
+                }}
+                onClick={() => {
+                  setShowInboxDropdown(!showInboxDropdown);
+                  loadInbox();
+                }}
+                title="Notifications Inbox"
+              >
+                <Bell size={16} />
+                {unreadNotifCount > 0 && (
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: '-4px',
+                      right: '-4px',
+                      background: 'var(--accent-rose)',
+                      color: '#fff',
+                      fontSize: '0.65rem',
+                      fontWeight: 700,
+                      borderRadius: '9999px',
+                      padding: '1px 5px',
+                      minWidth: '16px',
+                      textAlign: 'center',
+                      boxShadow: '0 0 8px rgba(244, 63, 94, 0.6)',
+                    }}
+                  >
+                    {unreadNotifCount}
+                  </span>
+                )}
+              </button>
+
+              {showInboxDropdown && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    top: 'calc(100% + 8px)',
+                    right: 0,
+                    width: '360px',
+                    background: 'var(--bg-card)',
+                    border: '1px solid var(--border-subtle)',
+                    borderRadius: 'var(--radius-md)',
+                    boxShadow: '0 12px 36px rgba(0,0,0,0.4)',
+                    backdropFilter: 'blur(16px)',
+                    zIndex: 1000,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    maxHeight: '440px',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <div
+                    style={{
+                      padding: '0.75rem 1rem',
+                      borderBottom: '1px solid var(--border-subtle)',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, color: '#fff', fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <Bell size={14} color="var(--accent-cyan)" />
+                      <span>Notifications Inbox</span>
+                    </div>
+                    {unreadNotifCount > 0 && (
+                      <button
+                        style={{
+                          background: 'none',
+                          border: 'none',
+                          color: 'var(--accent-cyan)',
+                          fontSize: '0.75rem',
+                          cursor: 'pointer',
+                          textDecoration: 'underline',
+                        }}
+                        onClick={async () => {
+                          await api.markAllInboxRead();
+                          loadInbox();
+                        }}
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+
+                  <div style={{ overflowY: 'auto', flex: 1, padding: '0.5rem' }}>
+                    {inboxNotifications.length === 0 ? (
+                      <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                        No notifications in inbox. All quiet!
+                      </div>
+                    ) : (
+                      inboxNotifications.map(n => (
+                        <div
+                          key={n.id}
+                          style={{
+                            padding: '0.6rem 0.75rem',
+                            borderRadius: 'var(--radius-sm)',
+                            background: n.status === 'UNREAD' ? 'rgba(56, 189, 248, 0.08)' : 'transparent',
+                            borderBottom: '1px solid rgba(255,255,255,0.04)',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            gap: '0.2rem',
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span style={{ fontWeight: 600, fontSize: '0.82rem', color: '#fff' }}>{n.subject}</span>
+                            <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                              {new Date(n.created_time).toLocaleTimeString()}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.3 }}>
+                            {n.body}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                  <div
+                    style={{
+                      padding: '0.5rem 1rem',
+                      borderTop: '1px solid var(--border-subtle)',
+                      background: 'rgba(0,0,0,0.2)',
+                      fontSize: '0.75rem',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <a
+                      href="http://localhost:8025"
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: 'var(--accent-cyan)', textDecoration: 'none', display: 'flex', alignItems: 'center', gap: '0.3rem' }}
+                    >
+                      <ExternalLink size={12} />
+                      <span>Mailpit Web UI (:8025)</span>
+                    </a>
+                    <span style={{ color: 'var(--text-muted)' }}>{inboxNotifications.length} items</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
             <div className="badge-tag live">
               MQTT :1883 Active
             </div>
@@ -1740,111 +1955,12 @@ export default function App() {
 
           {/* TAB 5: ALARMS MANAGEMENT */}
           {activeTab === 'alarms' && (
-            <>
-              <div className="page-header">
-                <div>
-                  <h2 className="page-title">Alarms & Incidents</h2>
-                  <p className="page-subtitle">Realtime alert tracking generated by the Rule Engine and threshold evaluation</p>
-                </div>
-                <button className="btn btn-secondary" onClick={loadAlarms}>
-                  <RefreshCw size={15} className={alarmsLoading ? 'animate-spin' : ''} />
-                  <span>Refresh Alarms</span>
-                </button>
-              </div>
-
-              <div className="table-container">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Severity</th>
-                      <th>Alarm Type</th>
-                      <th>Status</th>
-                      <th>Originator ID</th>
-                      <th>Trigger Time</th>
-                      <th style={{ textAlign: 'right' }}>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {alarms.length === 0 ? (
-                      <tr>
-                        <td colSpan={6} style={{ textAlign: 'center', padding: '48px', color: 'var(--text-muted)' }}>
-                          {alarmsLoading ? 'Loading alarms...' : 'No alarms recorded. All device metrics are within normal parameters!'}
-                        </td>
-                      </tr>
-                    ) : (
-                      alarms.map(alarm => {
-                        const isCritical = alarm.severity === 'CRITICAL';
-                        const isMajor = alarm.severity === 'MAJOR';
-                        const isWarning = alarm.severity === 'WARNING';
-                        const isAcked = alarm.status.includes('ACK');
-                        const isCleared = alarm.status.startsWith('CLEARED');
-
-                        return (
-                          <tr key={alarm.id}>
-                            <td>
-                              <span className="badge-tag" style={{
-                                background: isCritical ? 'rgba(244, 63, 94, 0.2)' : isMajor ? 'rgba(239, 68, 68, 0.15)' : isWarning ? 'rgba(245, 158, 11, 0.2)' : 'rgba(6, 182, 212, 0.15)',
-                                color: isCritical || isMajor ? 'var(--accent-rose)' : isWarning ? 'var(--accent-amber)' : 'var(--accent-cyan)',
-                                border: '1px solid var(--border-subtle)'
-                              }}>
-                                <AlertTriangle size={12} />
-                                {alarm.severity}
-                              </span>
-                            </td>
-                            <td>
-                              <div style={{ fontWeight: 600, color: '#fff' }}>{alarm.type}</div>
-                              {alarm.details && (
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                                  {(alarm.details as any).message || JSON.stringify(alarm.details)}
-                                </div>
-                              )}
-                            </td>
-                            <td>
-                              <span className="badge-tag" style={{
-                                background: isCleared ? 'rgba(16, 185, 129, 0.15)' : isAcked ? 'rgba(56, 189, 248, 0.15)' : 'rgba(244, 63, 94, 0.15)',
-                                color: isCleared ? 'var(--accent-emerald)' : isAcked ? 'var(--accent-cyan)' : 'var(--accent-rose)'
-                              }}>
-                                {alarm.status}
-                              </span>
-                            </td>
-                            <td className="font-mono" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                              {alarm.originator_id}
-                            </td>
-                            <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                              {new Date(alarm.start_ts).toLocaleString()}
-                            </td>
-                            <td style={{ textAlign: 'right' }}>
-                              <div style={{ display: 'inline-flex', gap: '8px' }}>
-                                {!isAcked && !isCleared && (
-                                  <button 
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={() => handleAckAlarm(alarm.id)}
-                                    title="Acknowledge Alarm"
-                                  >
-                                    <CheckCircle size={13} style={{ color: 'var(--accent-cyan)' }} />
-                                    <span>Ack</span>
-                                  </button>
-                                )}
-                                {!isCleared && (
-                                  <button 
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={() => handleClearAlarm(alarm.id)}
-                                    title="Clear Alarm"
-                                  >
-                                    <XCircle size={13} style={{ color: 'var(--accent-emerald)' }} />
-                                    <span>Clear</span>
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </>
+            <AlarmsView
+              alarms={alarms}
+              onRefresh={loadAlarms}
+              onAckAlarm={handleAckAlarm}
+              onClearAlarm={handleClearAlarm}
+            />
           )}
 
           {/* TAB 6: SYSTEM HEALTH */}
@@ -1913,6 +2029,11 @@ export default function App() {
           {/* TAB 9: EDGE FLEET */}
           {activeTab === 'edge' && (
             <EdgeView />
+          )}
+
+          {/* TAB 10: RULE ENGINE & DAG STUDIO */}
+          {activeTab === 'rules' && (
+            <RuleEngineView />
           )}
         </div>
       </main>

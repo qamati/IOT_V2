@@ -26,9 +26,10 @@ export function EdgeView() {
     setLoading(true);
     try {
       const list = await api.listEdgeNodes();
-      setNodes(list);
+      setNodes(Array.isArray(list) ? list : []);
     } catch (e) {
       console.error(e);
+      setNodes([]);
     } finally {
       setLoading(false);
     }
@@ -136,13 +137,17 @@ export function EdgeView() {
 
       {/* Edge Nodes Directory */}
       <div className="card">
-        <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Network size={18} style={{ color: 'var(--accent-emerald)' }} />
-          <span>Active Fleet Edge Nodes ({nodes.length})</span>
-        </h3>
+        {(() => {
+          const safeNodes = Array.isArray(nodes) ? nodes : [];
+          return (
+            <>
+              <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Network size={18} style={{ color: 'var(--accent-emerald)' }} />
+                <span>Active Fleet Edge Nodes ({safeNodes.length})</span>
+              </h3>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px' }}>
-          {nodes.map(node => (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: '16px' }}>
+                {safeNodes.map(node => (
             <div 
               key={node.id}
               style={{
@@ -200,6 +205,9 @@ export function EdgeView() {
             </div>
           ))}
         </div>
+      </>
+    );
+  })()}
 
         {syncLog && (
           <div style={{

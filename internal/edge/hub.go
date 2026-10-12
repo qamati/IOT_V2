@@ -105,7 +105,7 @@ func (h *memoryHub) ListEdges(ctx context.Context, tenantID ids.ID) ([]*EdgeNode
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	var result []*EdgeNode
+	result := make([]*EdgeNode, 0)
 	for _, e := range h.edges {
 		if e.TenantID == ids.Nil || e.TenantID == tenantID {
 			result = append(result, e)

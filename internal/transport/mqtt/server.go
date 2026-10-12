@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 
 	mqtt "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/listeners"
 	"github.com/mochi-mqtt/server/v2/packets"
 	"github.com/qamati/IOT_V2/internal/core"
+	"github.com/qamati/IOT_V2/internal/devstate"
 	"github.com/qamati/IOT_V2/internal/model"
 	"github.com/qamati/IOT_V2/pkg/bus"
 )
@@ -28,6 +30,7 @@ type DeviceAuthHook struct {
 	mqtt.HookBase
 	devManager *core.DeviceManager
 	bus        bus.Bus
+	tracker    devstate.Tracker
 	logger     *slog.Logger
 
 	mu      sync.RWMutex
@@ -64,6 +67,10 @@ func (h *DeviceAuthHook) OnConnectAuthenticate(cl *mqtt.Client, pk packets.Packe
 	h.clients[cl.ID] = creds
 	h.mu.Unlock()
 
+	if h.tracker != nil {
+		h.tracker.RecordConnect(context.Background(), creds.DeviceID, time.Now().UnixMilli())
+	}
+
 	h.logger.Info("device authenticated successfully via MQTT",
 		"device_id", creds.DeviceID, "tenant_id", creds.TenantID, "client_id", cl.ID)
 	return true
@@ -87,6 +94,10 @@ func (h *DeviceAuthHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.
 		return pk, errors.New("unauthorized device publish")
 	}
 
+	if h.tracker != nil {
+		h.tracker.RecordActivity(context.Background(), creds.DeviceID, time.Now().UnixMilli())
+	}
+
 	// Dispatch to the bus and confirm durability
 	msg := bus.NewMessage(creds.TenantID.String(), "DEVICE", creds.DeviceID.String(), bus.TypeTelemetryUp, pk.Payload)
 	if err := h.bus.Publish(context.Background(), "telemetry.up", msg); err != nil {
@@ -99,15 +110,28 @@ func (h *DeviceAuthHook) OnPublish(cl *mqtt.Client, pk packets.Packet) (packets.
 
 func (h *DeviceAuthHook) OnDisconnect(cl *mqtt.Client, err error, expire bool) {
 	h.mu.Lock()
+	creds, ok := h.clients[cl.ID]
 	delete(h.clients, cl.ID)
 	h.mu.Unlock()
+
+	if ok && h.tracker != nil {
+		h.tracker.RecordDisconnect(context.Background(), creds.DeviceID, time.Now().UnixMilli())
+	}
 }
 
 // Server encapsulates the embedded mochi-mqtt broker.
 type Server struct {
 	server *mqtt.Server
 	cfg    Config
+	hook   *DeviceAuthHook
 	logger *slog.Logger
+}
+
+func (s *Server) WithTracker(t devstate.Tracker) *Server {
+	if s.hook != nil {
+		s.hook.tracker = t
+	}
+	return s
 }
 
 func NewServer(cfg Config, devManager *core.DeviceManager, b bus.Bus, logger *slog.Logger) (*Server, error) {
@@ -150,6 +174,7 @@ func NewServer(cfg Config, devManager *core.DeviceManager, b bus.Bus, logger *sl
 	return &Server{
 		server: s,
 		cfg:    cfg,
+		hook:   hook,
 		logger: logger,
 	}, nil
 }

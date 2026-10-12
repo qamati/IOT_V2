@@ -49,15 +49,19 @@ export function ScadaView() {
         api.listScadaTags(),
         api.listScadaAlarms()
       ]);
-      setTags(tagList);
-      setAlarms(alarmList);
+      const safeTagList = Array.isArray(tagList) ? tagList : [];
+      const safeAlarmList = Array.isArray(alarmList) ? alarmList : [];
+      setTags(safeTagList);
+      setAlarms(safeAlarmList);
 
-      const tankTag = tagList.find(t => t.path === 'WaterTreatment.Tank101.Level');
+      const tankTag = safeTagList.find(t => t.path === 'WaterTreatment.Tank101.Level');
       if (tankTag && typeof tankTag.value === 'number') {
         setSimLevel(tankTag.value);
       }
     } catch (e) {
       console.error(e);
+      setTags([]);
+      setAlarms([]);
     } finally {
       setLoading(false);
     }
@@ -115,10 +119,13 @@ export function ScadaView() {
   };
 
   // Find tags for HMI synoptic
-  const tankLevelTag = tags.find(t => t.path === 'WaterTreatment.Tank101.Level');
-  const pumpStatusTag = tags.find(t => t.path === 'WaterTreatment.Pump101.Status');
-  const flowTag = tags.find(t => t.path === 'WaterTreatment.Pump101.Flow');
-  const pressureTag = tags.find(t => t.path === 'WaterTreatment.Discharge.Pressure');
+  const safeTags = Array.isArray(tags) ? tags : [];
+  const safeAlarms = Array.isArray(alarms) ? alarms : [];
+
+  const tankLevelTag = safeTags.find(t => t.path === 'WaterTreatment.Tank101.Level');
+  const pumpStatusTag = safeTags.find(t => t.path === 'WaterTreatment.Pump101.Status');
+  const flowTag = safeTags.find(t => t.path === 'WaterTreatment.Pump101.Flow');
+  const pressureTag = safeTags.find(t => t.path === 'WaterTreatment.Discharge.Pressure');
 
   const tankLevel = typeof tankLevelTag?.value === 'number' ? tankLevelTag.value : simLevel;
   const isPumpRunning = pumpStatusTag?.value === 1 || pumpStatusTag?.value === true;
@@ -139,7 +146,7 @@ export function ScadaView() {
       </div>
 
       {/* ISA-18.2 Process Alarms Banner */}
-      {alarms.length > 0 && (
+      {safeAlarms.length > 0 && (
         <div style={{
           background: 'rgba(244, 63, 94, 0.08)',
           border: '1px solid rgba(244, 63, 94, 0.3)',
@@ -149,13 +156,13 @@ export function ScadaView() {
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-rose)' }}>
               <ShieldAlert size={18} />
-              <strong style={{ fontSize: '0.95rem' }}>Active ISA-18.2 Process Alarms ({alarms.length})</strong>
+              <strong style={{ fontSize: '0.95rem' }}>Active ISA-18.2 Process Alarms ({safeAlarms.length})</strong>
             </div>
             <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Standard ISA-18.2 / IEC 62682 state machine</span>
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {alarms.map(a => (
+            {safeAlarms.map(a => (
               <div 
                 key={a.id} 
                 style={{
@@ -335,7 +342,7 @@ export function ScadaView() {
                 </tr>
               </thead>
               <tbody>
-                {tags.map(t => (
+                {safeTags.map(t => (
                   <tr key={t.id}>
                     <td>
                       <div className="font-mono" style={{ fontWeight: 600, fontSize: '0.8rem', color: '#fff' }}>

@@ -61,6 +61,9 @@ func (a *API) handleListConverters(w http.ResponseWriter, r *http.Request) {
 		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
 		return
 	}
+	if convs == nil {
+		convs = make([]*integration.Converter, 0)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(convs)
@@ -174,6 +177,9 @@ func (a *API) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
 		return
+	}
+	if integs == nil {
+		integs = make([]*integration.Integration, 0)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -302,6 +308,9 @@ func (a *API) handleListEdgeNodes(w http.ResponseWriter, r *http.Request) {
 		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
 		return
 	}
+	if nodes == nil {
+		nodes = make([]*edge.EdgeNode, 0)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(nodes)
@@ -412,6 +421,9 @@ func (a *API) handleListScadaTags(w http.ResponseWriter, r *http.Request) {
 		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
 		return
 	}
+	if tags == nil {
+		tags = make([]*scada.Tag, 0)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(tags)
@@ -486,6 +498,9 @@ func (a *API) handleListScadaAlarms(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
 		return
+	}
+	if alarms == nil {
+		alarms = make([]*scada.ISA182Alarm, 0)
 	}
 
 	w.Header().Set("Content-Type", "application/json")

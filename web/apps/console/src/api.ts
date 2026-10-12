@@ -54,6 +54,29 @@ export interface DeviceActivity {
   device_id: string;
   last_activity_time: number;
   active: boolean;
+  last_connect_time?: number;
+  last_disconnect_time?: number;
+  inactivity_timeout_ms?: number;
+}
+
+export interface DeviceState {
+  device_id: string;
+  tenant_id?: string;
+  active: boolean;
+  last_connect_time: number;
+  last_disconnect_time: number;
+  last_activity_time: number;
+  inactivity_timeout_ms: number;
+  inactivity_alarm_time?: number;
+  deadline: number;
+  overridden?: boolean;
+}
+
+export interface StateSummary {
+  tenant_id: string;
+  total: number;
+  active: number;
+  inactive: number;
 }
 
 export interface Alarm {
@@ -155,6 +178,21 @@ class ApiClient {
 
   async getDeviceActivity(id: string): Promise<DeviceActivity> {
     return this.request<DeviceActivity>(`/devices/${id}/activity`);
+  }
+
+  async getDeviceState(id: string): Promise<DeviceState> {
+    return this.request<DeviceState>(`/devices/${id}/state`);
+  }
+
+  async overrideDeviceState(id: string, active: boolean): Promise<DeviceState> {
+    return this.request<DeviceState>(`/devices/${id}/state/override`, {
+      method: 'POST',
+      body: JSON.stringify({ active }),
+    });
+  }
+
+  async getDevStateSummary(): Promise<StateSummary> {
+    return this.request<StateSummary>('/devstate/summary');
   }
 
   async createDevice(name: string, label: string, token: string): Promise<CreateDeviceResult> {
@@ -293,7 +331,8 @@ class ApiClient {
 
   // --- Stage 8: Integrations & Converters ---
   async listConverters(): Promise<Converter[]> {
-    return this.request<Converter[]>('/converters');
+    const res = await this.request<Converter[]>('/converters');
+    return Array.isArray(res) ? res : [];
   }
 
   async testConverter(converter: Converter, payload: string, metadata: Record<string, string> = {}): Promise<{ success: boolean; event: any }> {
@@ -304,7 +343,8 @@ class ApiClient {
   }
 
   async listIntegrations(): Promise<Integration[]> {
-    return this.request<Integration[]>('/integrations');
+    const res = await this.request<Integration[]>('/integrations');
+    return Array.isArray(res) ? res : [];
   }
 
   async getIntegrationStatus(id: string): Promise<IntegrationStatus> {
@@ -312,7 +352,8 @@ class ApiClient {
   }
 
   async getIntegrationDebug(id: string): Promise<DebugEvent[]> {
-    return this.request<DebugEvent[]>(`/integrations/${id}/debug`);
+    const res = await this.request<DebugEvent[]>(`/integrations/${id}/debug`);
+    return Array.isArray(res) ? res : [];
   }
 
   async sendIntegrationWebhook(routingKey: string, payload: any): Promise<any> {
@@ -326,7 +367,8 @@ class ApiClient {
 
   // --- Stage 9: Edge Fleet ---
   async listEdgeNodes(): Promise<EdgeNode[]> {
-    return this.request<EdgeNode[]>('/edge');
+    const res = await this.request<EdgeNode[]>('/edge');
+    return Array.isArray(res) ? res : [];
   }
 
   async triggerEdgeSync(batch: any): Promise<any> {
@@ -340,7 +382,8 @@ class ApiClient {
 
   // --- Stage 10: SCADA ---
   async listScadaTags(): Promise<ScadaTag[]> {
-    return this.request<ScadaTag[]>('/scada/tags');
+    const res = await this.request<ScadaTag[]>('/scada/tags');
+    return Array.isArray(res) ? res : [];
   }
 
   async updateScadaTag(path: string, value: any, quality = 'GOOD'): Promise<{ tag: ScadaTag; emitted: boolean }> {
@@ -351,7 +394,8 @@ class ApiClient {
   }
 
   async listScadaAlarms(): Promise<ISA182Alarm[]> {
-    return this.request<ISA182Alarm[]>('/scada/alarms');
+    const res = await this.request<ISA182Alarm[]>('/scada/alarms');
+    return Array.isArray(res) ? res : [];
   }
 
   async ackScadaAlarm(id: string): Promise<ISA182Alarm> {
@@ -376,6 +420,154 @@ class ApiClient {
     return this.request<ControlCommand>('/scada/control/operate', {
       method: 'POST',
       body: JSON.stringify({ select_id: selectId }),
+    });
+  }
+
+  // --- Stage 4: Rule Engine & DAG Studio ---
+  async listRuleChains(page = 1, pageSize = 20): Promise<{ data: RuleChain[]; total: number; page: number; pageSize: number }> {
+    return this.request<{ data: RuleChain[]; total: number; page: number; pageSize: number }>(`/ruleChains?page=${page}&pageSize=${pageSize}`);
+  }
+
+  async getRuleChain(id: string): Promise<RuleChain> {
+    return this.request<RuleChain>(`/ruleChains/${id}`);
+  }
+
+  async createRuleChain(chain: Partial<RuleChain>): Promise<RuleChain> {
+    return this.request<RuleChain>('/ruleChains', {
+      method: 'POST',
+      body: JSON.stringify(chain),
+    });
+  }
+
+  async deleteRuleChain(id: string): Promise<void> {
+    return this.request<void>(`/ruleChains/${id}`, { method: 'DELETE' });
+  }
+
+  async setRootRuleChain(id: string): Promise<{ success: boolean; rootChainId: string }> {
+    return this.request<{ success: boolean; rootChainId: string }>(`/ruleChains/${id}/root`, { method: 'POST' });
+  }
+
+  async getRuleChainMetadata(id: string): Promise<RuleChainRevision> {
+    return this.request<RuleChainRevision>(`/ruleChains/${id}/metadata`);
+  }
+
+  async saveRuleChainMetadata(id: string, definition: ChainDefinition, comment?: string): Promise<RuleChainRevision> {
+    return this.request<RuleChainRevision>(`/ruleChains/${id}/metadata`, {
+      method: 'POST',
+      body: JSON.stringify({ definition, comment }),
+    });
+  }
+
+  async listRuleDescriptors(): Promise<RuleDescriptor[]> {
+    return this.request<RuleDescriptor[]>('/ruleChains/descriptors');
+  }
+
+  async testRuleChain(payload: { definition?: ChainDefinition; msgType?: string; data?: any; metadata?: Record<string, string>; originatorId?: string }): Promise<ExecutionTrace> {
+    return this.request<ExecutionTrace>('/ruleChains/test', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async testRuleChainById(id: string, payload: { msgType?: string; data?: any; metadata?: Record<string, string>; originatorId?: string }): Promise<ExecutionTrace> {
+    return this.request<ExecutionTrace>(`/ruleChains/${id}/test`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  // --- Stage 5: Alarms & Notification Center ---
+  async listAlarmRules(): Promise<AlarmRule[]> {
+    return this.request<AlarmRule[]>('/alarmRules');
+  }
+
+  async saveAlarmRule(rule: Partial<AlarmRule>): Promise<AlarmRule> {
+    return this.request<AlarmRule>('/alarmRules', {
+      method: 'POST',
+      body: JSON.stringify(rule),
+    });
+  }
+
+  async getAlarmRule(id: string): Promise<AlarmRule> {
+    return this.request<AlarmRule>(`/alarmRules/${id}`);
+  }
+
+  async deleteAlarmRule(id: string): Promise<void> {
+    return this.request<void>(`/alarmRules/${id}`, { method: 'DELETE' });
+  }
+
+  async testAlarmRule(req: AlarmRuleTestRequest): Promise<AlarmRuleTestResponse> {
+    return this.request<AlarmRuleTestResponse>('/alarmRules/test', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  }
+
+  async listNotificationTargets(): Promise<NotificationTarget[]> {
+    return this.request<NotificationTarget[]>('/notification/targets');
+  }
+
+  async saveNotificationTarget(target: Partial<NotificationTarget>): Promise<NotificationTarget> {
+    return this.request<NotificationTarget>('/notification/targets', {
+      method: 'POST',
+      body: JSON.stringify(target),
+    });
+  }
+
+  async deleteNotificationTarget(id: string): Promise<void> {
+    return this.request<void>(`/notification/targets/${id}`, { method: 'DELETE' });
+  }
+
+  async listNotificationTemplates(): Promise<NotificationTemplate[]> {
+    return this.request<NotificationTemplate[]>('/notification/templates');
+  }
+
+  async saveNotificationTemplate(template: Partial<NotificationTemplate>): Promise<NotificationTemplate> {
+    return this.request<NotificationTemplate>('/notification/templates', {
+      method: 'POST',
+      body: JSON.stringify(template),
+    });
+  }
+
+  async deleteNotificationTemplate(id: string): Promise<void> {
+    return this.request<void>(`/notification/templates/${id}`, { method: 'DELETE' });
+  }
+
+  async listNotificationRules(): Promise<NotificationRule[]> {
+    return this.request<NotificationRule[]>('/notification/rules');
+  }
+
+  async saveNotificationRule(rule: Partial<NotificationRule>): Promise<NotificationRule> {
+    return this.request<NotificationRule>('/notification/rules', {
+      method: 'POST',
+      body: JSON.stringify(rule),
+    });
+  }
+
+  async deleteNotificationRule(id: string): Promise<void> {
+    return this.request<void>(`/notification/rules/${id}`, { method: 'DELETE' });
+  }
+
+  async listInbox(limit = 20, offset = 0): Promise<{ data: NotificationItem[]; total: number; unread_count: number }> {
+    return this.request<{ data: NotificationItem[]; total: number; unread_count: number }>(`/notification/inbox?limit=${limit}&offset=${offset}`);
+  }
+
+  async markInboxRead(id: string): Promise<void> {
+    return this.request<void>(`/notification/inbox/${id}/read`, { method: 'POST' });
+  }
+
+  async markAllInboxRead(): Promise<void> {
+    return this.request<void>('/notification/inbox/read-all', { method: 'POST' });
+  }
+
+  async getInboxUnreadCount(): Promise<{ unread_count: number }> {
+    return this.request<{ unread_count: number }>('/notification/inbox/unread-count');
+  }
+
+  async sendNotification(req: NotificationSendRequest): Promise<any> {
+    return this.request<any>('/notification/send', {
+      method: 'POST',
+      body: JSON.stringify(req),
     });
   }
 }
@@ -510,5 +702,200 @@ export interface ControlCommand {
   reason?: string;
 }
 
+export interface RuleChain {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  name: string;
+  type: string;
+  is_root: boolean;
+  published_revision: number;
+  additional_info?: any;
+  version: number;
+}
+
+export interface RuleChainRevision {
+  rule_chain_id: string;
+  revision: number;
+  status: string;
+  definition: ChainDefinition;
+  author_id?: string;
+  comment?: string;
+  created_time: number;
+}
+
+export interface ChainDefinition {
+  firstNodeId: string;
+  nodes: RuleNode[];
+  connections: RuleConnection[];
+}
+
+export interface RuleNode {
+  id: string;
+  type: string;
+  name: string;
+  configuration: any;
+  additionalInfo?: any;
+}
+
+export interface RuleConnection {
+  from: string;
+  to: string;
+  label: string;
+}
+
+export interface RuleDescriptor {
+  type: string;
+  name: string;
+  category: 'FILTER' | 'ENRICHMENT' | 'TRANSFORMATION' | 'ACTION' | 'EXTERNAL' | 'FLOW';
+  relations: string[];
+  configSchema: any;
+  uiSchema?: any;
+  version: number;
+  docs?: string;
+}
+
+export interface NodeTraceRecord {
+  nodeId: string;
+  nodeType: string;
+  inMessage: any;
+  outMessage?: any;
+  relations: string[];
+  error?: string;
+  durationMs: number;
+  timestamp: number;
+}
+
+export interface ExecutionTrace {
+  messageId: string;
+  chainId: string;
+  success: boolean;
+  records: NodeTraceRecord[];
+  totalTimeMs: number;
+  error?: string;
+}
+
+// Stage 5 Alarms & Notification Center Types
+export interface AlarmFilter {
+  key: string;
+  value_type: 'NUMERIC' | 'STRING' | 'BOOLEAN';
+  operator: 'EQUAL' | 'NOT_EQUAL' | 'GREATER' | 'GREATER_OR_EQUAL' | 'LESS' | 'LESS_OR_EQUAL' | 'CONTAINS';
+  value: any;
+  dynamic_value?: { source: string; key: string };
+}
+
+export interface AlarmCondition {
+  type: 'SIMPLE' | 'DURATION' | 'REPEATING';
+  duration_ms?: number;
+  count?: number;
+  filters: AlarmFilter[];
+}
+
+export interface AlarmRuleCreateDef {
+  condition: AlarmCondition;
+  details?: string;
+}
+
+export interface AlarmRule {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  name: string;
+  scope: 'DEVICE_PROFILE' | 'DEVICE' | 'ASSET' | 'CUSTOMER';
+  target_id?: string;
+  alarm_type: string;
+  enabled: boolean;
+  create_rules: Record<string, AlarmRuleCreateDef>;
+  clear_rule?: AlarmRuleCreateDef;
+  propagate?: any;
+  version: number;
+}
+
+export interface AlarmRuleTestDataPoint {
+  timestamp: number;
+  values: Record<string, any>;
+}
+
+export interface AlarmRuleTestRequest {
+  rule: AlarmRule;
+  data_points: AlarmRuleTestDataPoint[];
+}
+
+export interface AlarmRuleTestTraceStep {
+  timestamp: number;
+  severity?: string;
+  matched: boolean;
+  action: 'NONE' | 'TRIGGER' | 'UPDATE' | 'CLEAR';
+  details?: string;
+  duration_true_ms: number;
+  repeat_count: number;
+}
+
+export interface AlarmRuleTestResponse {
+  rule_name: string;
+  traces: AlarmRuleTestTraceStep[];
+}
+
+export interface NotificationTarget {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  name: string;
+  type: 'PLATFORM_USERS' | 'EMAIL' | 'SLACK' | 'WEBHOOK' | 'SMS';
+  config: any;
+}
+
+export interface NotificationTemplate {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  name: string;
+  type: string;
+  config: {
+    subject?: string;
+    body?: string;
+    [key: string]: any;
+  };
+}
+
+export interface EscalationStep {
+  step: number;
+  delay_seconds: number;
+  target_ids: string[];
+}
+
+export interface NotificationRule {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  name: string;
+  enabled: boolean;
+  template_id: string;
+  trigger_type: string;
+  trigger_config: any;
+  recipients_config: EscalationStep[];
+  throttle?: any;
+}
+
+export interface NotificationItem {
+  id: string;
+  created_time: number;
+  tenant_id: string;
+  recipient_id: string;
+  type: string;
+  subject: string;
+  body: string;
+  info?: any;
+  status: 'UNREAD' | 'READ';
+}
+
+export interface NotificationSendRequest {
+  targets: string[];
+  subject: string;
+  body: string;
+  info?: any;
+}
+
 export const api = new ApiClient();
+
 

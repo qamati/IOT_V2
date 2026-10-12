@@ -143,6 +143,46 @@ func TestEndToEndWalkingSkeleton(t *testing.T) {
 	require.Contains(t, tsResp, "temperature")
 	assert.Len(t, tsResp["temperature"], 1)
 
+	// 5b. Query Device State & Summary
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/devices/"+deviceID+"/state", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	apiSvc.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var stResp model.DeviceState
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &stResp))
+	assert.True(t, stResp.Active)
+	assert.Greater(t, stResp.LastActivityTime, int64(0))
+
+	// Query State Summary
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/devstate/summary", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	apiSvc.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var sumResp map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &sumResp))
+	assert.Equal(t, float64(1), sumResp["total"])
+	assert.Equal(t, float64(1), sumResp["active"])
+
+	// Override Device State to Inactive
+	overrideBody, _ := json.Marshal(map[string]bool{"active": false})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/devices/"+deviceID+"/state/override", bytes.NewReader(overrideBody))
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	apiSvc.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/devices/"+deviceID+"/state", nil)
+	req.Header.Set("Authorization", "Bearer "+tokenA)
+	apiSvc.Router().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &stResp))
+	assert.False(t, stResp.Active)
+
 	// 6. Cross-Tenant Isolation: Login as Tenant B
 	loginBBody, _ := json.Marshal(map[string]string{
 		"email":    "admin@tenant-b.com",

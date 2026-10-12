@@ -103,25 +103,28 @@ func (p *PostgresUserStore) Save(ctx context.Context, user *model.User, password
 	}
 	defer tx.Rollback(ctx)
 
-	_, err = tx.Exec(ctx, `
+	var actualID ids.ID
+	err = tx.QueryRow(ctx, `
 		INSERT INTO users (id, created_time, tenant_id, authority, email, first_name, last_name, version)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (email) DO UPDATE SET
 			first_name = EXCLUDED.first_name,
 			last_name = EXCLUDED.last_name,
 			version = users.version + 1
-	`, user.ID, user.CreatedTime, user.TenantID, user.Authority, user.Email, user.FirstName, user.LastName, user.Version)
+		RETURNING id
+	`, user.ID, user.CreatedTime, user.TenantID, user.Authority, user.Email, user.FirstName, user.LastName, user.Version).Scan(&actualID)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to save user: %w", err)
 	}
+	user.ID = actualID
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO user_credentials (user_id, password_hash, enabled)
 		VALUES ($1, $2, true)
-		ON CONFLICT (user_id) DO UPDATE SET password_hash = EXCLUDED.password_hash
-	`, user.ID, passwordHash)
+		ON CONFLICT (user_id) DO UPDATE SET password_hash = EXCLUDED.password_hash, enabled = true
+	`, actualID, passwordHash)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to save user credentials: %w", err)
 	}
 
 	return tx.Commit(ctx)

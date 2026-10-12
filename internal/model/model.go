@@ -158,6 +158,14 @@ const (
 	AlarmClearedAck   AlarmStatus = "CLEARED_ACK"
 )
 
+func (s AlarmStatus) IncludesAck() bool {
+	return s == AlarmActiveAck || s == AlarmClearedAck
+}
+
+func (s AlarmStatus) IsCleared() bool {
+	return s == AlarmClearedUnack || s == AlarmClearedAck
+}
+
 // Alarm represents an operational condition or alert on an entity.
 type Alarm struct {
 	ID           ids.ID          `json:"id"`
@@ -176,9 +184,26 @@ type Alarm struct {
 
 // DeviceActivity tracks online/offline status and heartbeat timestamps.
 type DeviceActivity struct {
-	DeviceID         ids.ID `json:"device_id"`
-	LastActivityTime int64  `json:"last_activity_time"`
-	Active           bool   `json:"active"`
+	DeviceID            ids.ID `json:"device_id"`
+	LastActivityTime    int64  `json:"last_activity_time"`
+	Active              bool   `json:"active"`
+	LastConnectTime     int64  `json:"last_connect_time,omitempty"`
+	LastDisconnectTime  int64  `json:"last_disconnect_time,omitempty"`
+	InactivityTimeoutMs int64  `json:"inactivity_timeout_ms,omitempty"`
+}
+
+// DeviceState represents the full connectivity and lifecycle state of an IoT device.
+type DeviceState struct {
+	DeviceID            ids.ID `json:"device_id"`
+	TenantID            ids.ID `json:"tenant_id,omitempty"`
+	Active              bool   `json:"active"`
+	LastConnectTime     int64  `json:"last_connect_time"`
+	LastDisconnectTime  int64  `json:"last_disconnect_time"`
+	LastActivityTime    int64  `json:"last_activity_time"`
+	InactivityTimeoutMs int64  `json:"inactivity_timeout_ms"`
+	InactivityAlarmTime int64  `json:"inactivity_alarm_time,omitempty"`
+	Deadline            int64  `json:"deadline"`
+	Overridden          bool   `json:"overridden,omitempty"`
 }
 
 // Dashboard represents an analytical visualization canvas.

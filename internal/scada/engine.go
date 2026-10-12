@@ -174,7 +174,7 @@ func (s *memoryService) ListTags(ctx context.Context, tenantID ids.ID) ([]*Tag, 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []*Tag
+	result := make([]*Tag, 0)
 	for _, t := range s.tags {
 		if t.TenantID == ids.Nil || t.TenantID == tenantID {
 			result = append(result, t)
@@ -267,7 +267,7 @@ func (s *memoryService) triggerISA182Alarm(tenantID ids.ID, path, alarmType stri
 		Severity:  "CRITICAL",
 		State:     AlarmStateUnackAlarm,
 		ActiveTs:  time.Now().UnixMilli(),
-		Message:   msg,
+		Message:   fmt.Sprintf("%s (value: %.2f)", msg, currentVal),
 	}
 }
 
@@ -275,7 +275,7 @@ func (s *memoryService) ListAlarms(ctx context.Context, tenantID ids.ID) ([]*ISA
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var result []*ISA182Alarm
+	result := make([]*ISA182Alarm, 0)
 	for _, a := range s.alarms {
 		if a.TenantID == ids.Nil || a.TenantID == tenantID {
 			result = append(result, a)

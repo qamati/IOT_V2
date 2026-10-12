@@ -121,7 +121,7 @@ func (b *MemoryBus) Publish(ctx context.Context, topic string, msg *bus.Message)
 	// Dispatch to ungrouped (broadcast)
 	for _, sub := range ungrouped {
 		b.chans[partIdx] <- task{
-			ctx:     ctx,
+			ctx:     b.ctx,
 			msg:     msg,
 			handler: sub.handler,
 		}
@@ -132,7 +132,7 @@ func (b *MemoryBus) Publish(ctx context.Context, topic string, msg *bus.Message)
 		chosenIdx := partIdx % len(groupSubs)
 		chosenSub := groupSubs[chosenIdx]
 		b.chans[partIdx] <- task{
-			ctx:     ctx,
+			ctx:     b.ctx,
 			msg:     msg,
 			handler: chosenSub.handler,
 		}

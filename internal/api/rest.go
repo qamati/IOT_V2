@@ -19,7 +19,10 @@ import (
 	"github.com/qamati/IOT_V2/internal/identity"
 	"github.com/qamati/IOT_V2/internal/integration"
 	"github.com/qamati/IOT_V2/internal/model"
+	"github.com/qamati/IOT_V2/internal/notification"
+	"github.com/qamati/IOT_V2/internal/realtime"
 	"github.com/qamati/IOT_V2/internal/rpc"
+	"github.com/qamati/IOT_V2/internal/rule"
 	"github.com/qamati/IOT_V2/internal/scada"
 	"github.com/qamati/IOT_V2/internal/telemetry"
 	"github.com/qamati/IOT_V2/pkg/bus"
@@ -29,40 +32,46 @@ import (
 
 // API encapsulates the REST API router and handlers.
 type API struct {
-	router       chi.Router
-	identity     *identity.Service
-	devManager   *core.DeviceManager
-	telemetry    telemetry.Store
-	attributes   telemetry.AttributeStore
-	tracker      devstate.Tracker
-	alarms       alarm.Service
-	dashboards   dashboard.Service
-	rpcSvc       rpc.Service
-	integrations integration.Service
-	edgeHub      edge.Service
-	scadaSvc     scada.Service
-	bus          bus.Bus
+	router        chi.Router
+	identity      *identity.Service
+	devManager    *core.DeviceManager
+	telemetry     telemetry.Store
+	attributes    telemetry.AttributeStore
+	tracker       devstate.Tracker
+	alarms        alarm.Service
+	notifications notification.Service
+	realtime      realtime.Service
+	dashboards    dashboard.Service
+	rpcSvc        rpc.Service
+	integrations  integration.Service
+	edgeHub       edge.Service
+	scadaSvc      scada.Service
+	ruleEngine    *rule.Engine
+	bus           bus.Bus
 }
 
 func NewAPI(idSvc *identity.Service, devMgr *core.DeviceManager, tsStore telemetry.Store, b bus.Bus) *API {
 	attrs := telemetry.NewMemoryAttributeStore()
 	tracker := devstate.NewMemoryTracker(60 * time.Second)
 	alarmSvc := alarm.NewMemoryService()
+	notifSvc := notification.NewMemoryService(notification.Config{})
 
 	a := &API{
-		router:       chi.NewRouter(),
-		identity:     idSvc,
-		devManager:   devMgr,
-		telemetry:    tsStore,
-		attributes:   attrs,
-		tracker:      tracker,
-		alarms:       alarmSvc,
-		dashboards:   dashboard.NewMemoryService(),
-		rpcSvc:       rpc.NewMemoryService(),
-		integrations: integration.NewMemoryService(devMgr, tsStore, attrs, tracker, nil),
-		edgeHub:      edge.NewMemoryHub(tsStore, alarmSvc),
-		scadaSvc:     scada.NewMemoryService(),
-		bus:          b,
+		router:        chi.NewRouter(),
+		identity:      idSvc,
+		devManager:    devMgr,
+		telemetry:     tsStore,
+		attributes:    attrs,
+		tracker:       tracker,
+		alarms:        alarmSvc,
+		notifications: notifSvc,
+		dashboards:    dashboard.NewMemoryService(),
+		rpcSvc:        rpc.NewMemoryService(),
+		integrations:  integration.NewMemoryService(devMgr, tsStore, attrs, tracker, nil),
+		edgeHub:       edge.NewMemoryHub(tsStore, alarmSvc),
+		scadaSvc:      scada.NewMemoryService(),
+		ruleEngine:    rule.NewEngine(alarmSvc, nil),
+		bus:           b,
 	}
 
 	a.setupMiddleware()
@@ -82,6 +91,16 @@ func (a *API) WithTracker(t devstate.Tracker) *API {
 
 func (a *API) WithAlarms(al alarm.Service) *API {
 	a.alarms = al
+	return a
+}
+
+func (a *API) WithNotifications(n notification.Service) *API {
+	a.notifications = n
+	return a
+}
+
+func (a *API) WithRealtime(rt realtime.Service) *API {
+	a.realtime = rt
 	return a
 }
 
@@ -110,6 +129,11 @@ func (a *API) WithScada(s scada.Service) *API {
 	return a
 }
 
+func (a *API) WithRuleEngine(re *rule.Engine) *API {
+	a.ruleEngine = re
+	return a
+}
+
 func (a *API) Router() chi.Router {
 	return a.router
 }
@@ -133,6 +157,9 @@ func (a *API) setupRoutes() {
 		// Public Auth
 		r.Post("/auth/login", a.handleLogin)
 
+		// Realtime WebSocket Gateway: GET /api/v1/ws
+		r.Get("/ws", a.handleWebSocket)
+
 		// Public Integration Webhook Endpoint
 		r.Post("/integrations/webhook/{routingKey}", a.handleIntegrationWebhook)
 
@@ -155,12 +182,15 @@ func (a *API) setupRoutes() {
 		r.Group(func(protected chi.Router) {
 			protected.Use(a.authMiddleware)
 
-			// Device CRUD & Activity
+			// Device CRUD & Activity / State
 			protected.Post("/devices", a.handleCreateDevice)
 			protected.Get("/devices", a.handleListDevices)
 			protected.Get("/devices/{id}", a.handleGetDevice)
 			protected.Get("/devices/{id}/credentials", a.handleGetDeviceCredentials)
 			protected.Get("/devices/{id}/activity", a.handleGetDeviceActivity)
+			protected.Get("/devices/{id}/state", a.handleGetDeviceState)
+			protected.Post("/devices/{id}/state/override", a.handleOverrideDeviceState)
+			protected.Get("/devstate/summary", a.handleGetDevStateSummary)
 			protected.Delete("/devices/{id}", a.handleDeleteDevice)
 
 			// Telemetry queries
@@ -177,6 +207,32 @@ func (a *API) setupRoutes() {
 			protected.Get("/alarms", a.handleListAlarms)
 			protected.Post("/alarms/{id}/ack", a.handleAckAlarm)
 			protected.Post("/alarms/{id}/clear", a.handleClearAlarm)
+
+			// Stage 5: Alarm Rules
+			protected.Get("/alarmRules", a.handleListAlarmRules)
+			protected.Post("/alarmRules", a.handleSaveAlarmRule)
+			protected.Get("/alarmRules/{id}", a.handleGetAlarmRule)
+			protected.Delete("/alarmRules/{id}", a.handleDeleteAlarmRule)
+			protected.Post("/alarmRules/test", a.handleTestAlarmRule)
+
+			// Stage 5: Notification Targets, Templates, Rules & Inbox
+			protected.Get("/notification/targets", a.handleListNotificationTargets)
+			protected.Post("/notification/targets", a.handleSaveNotificationTarget)
+			protected.Delete("/notification/targets/{id}", a.handleDeleteNotificationTarget)
+
+			protected.Get("/notification/templates", a.handleListNotificationTemplates)
+			protected.Post("/notification/templates", a.handleSaveNotificationTemplate)
+			protected.Delete("/notification/templates/{id}", a.handleDeleteNotificationTemplate)
+
+			protected.Get("/notification/rules", a.handleListNotificationRules)
+			protected.Post("/notification/rules", a.handleSaveNotificationRule)
+			protected.Delete("/notification/rules/{id}", a.handleDeleteNotificationRule)
+
+			protected.Get("/notification/inbox", a.handleListInbox)
+			protected.Post("/notification/inbox/{id}/read", a.handleMarkInboxRead)
+			protected.Post("/notification/inbox/read-all", a.handleMarkAllInboxRead)
+			protected.Get("/notification/inbox/unread-count", a.handleGetInboxUnreadCount)
+			protected.Post("/notification/send", a.handleSendNotification)
 
 			// Dashboard management
 			protected.Post("/dashboards", a.handleCreateDashboard)
@@ -219,6 +275,18 @@ func (a *API) setupRoutes() {
 			protected.Post("/scada/alarms/{id}/shelve", a.handleShelveScadaAlarm)
 			protected.Post("/scada/control/select", a.handleSelectScadaControl)
 			protected.Post("/scada/control/operate", a.handleOperateScadaControl)
+
+			// Stage 4: Rule Chains & DAG Node Catalog
+			protected.Get("/ruleChains", a.handleListRuleChains)
+			protected.Post("/ruleChains", a.handleCreateRuleChain)
+			protected.Get("/ruleChains/{id}", a.handleGetRuleChain)
+			protected.Delete("/ruleChains/{id}", a.handleDeleteRuleChain)
+			protected.Post("/ruleChains/{id}/root", a.handleSetRootRuleChain)
+			protected.Get("/ruleChains/{id}/metadata", a.handleGetRuleChainMetadata)
+			protected.Post("/ruleChains/{id}/metadata", a.handleSaveRuleChainMetadata)
+			protected.Get("/ruleChains/descriptors", a.handleListRuleDescriptors)
+			protected.Post("/ruleChains/test", a.handleTestRuleChain)
+			protected.Post("/ruleChains/{id}/test", a.handleTestRuleChainByID)
 		})
 	})
 }
@@ -527,6 +595,93 @@ func (a *API) handleGetDeviceActivity(w http.ResponseWriter, r *http.Request) {
 	activity := a.tracker.GetActivity(r.Context(), deviceID)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(activity)
+}
+
+// GET /api/v1/devices/{id}/state
+func (a *API) handleGetDeviceState(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	deviceID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid device id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if _, err := a.devManager.GetDevice(r.Context(), tenantID, deviceID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	st, err := a.tracker.GetState(r.Context(), deviceID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(st)
+}
+
+// POST /api/v1/devices/{id}/state/override
+func (a *API) handleOverrideDeviceState(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	deviceID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid device id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if _, err := a.devManager.GetDevice(r.Context(), tenantID, deviceID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	var req struct {
+		Active bool `json:"active"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid request body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	st, err := a.tracker.SetOverride(r.Context(), deviceID, req.Active)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(st)
+}
+
+// GET /api/v1/devstate/summary
+func (a *API) handleGetDevStateSummary(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	summary, err := a.tracker.GetSummary(r.Context(), tenantID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(summary)
 }
 
 // 8. GET /api/v1/telemetry/DEVICE/{id}/values/latest
@@ -1154,3 +1309,13 @@ func (a *API) handleGetDeviceRpcHistory(w http.ResponseWriter, r *http.Request) 
 		"pageSize": pageSize,
 	})
 }
+
+// GET /api/v1/ws
+func (a *API) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	if a.realtime != nil {
+		a.realtime.HandleWebSocket(w, r)
+		return
+	}
+	http.Error(w, "realtime gateway not configured", http.StatusServiceUnavailable)
+}
+
