@@ -48,18 +48,43 @@ func (e *Engine) Convert(conv *Converter, raw []byte, meta map[string]string) (*
 	case ModeDeclarative, "":
 		return e.convertDeclarative(conv, raw, meta)
 	case ModeExpression:
-		// Expression mode uses declarative fallback with expression mappings
-		return e.convertDeclarative(conv, raw, meta)
+		return e.convertExpression(conv, raw, meta)
 	default:
 		return nil, fmt.Errorf("unsupported converter mode: %s", conv.Mode)
 	}
+}
+
+// ConvertDownlink encodes a platform downlink event into external message payload.
+func (e *Engine) ConvertDownlink(conv *Converter, d *DownlinkEvent) ([]byte, error) {
+	if conv == nil || d == nil {
+		return nil, errs.InvalidArgument("converter and downlink event required")
+	}
+
+	// Default canonical downlink mapping
+	out := map[string]any{
+		"targetDevice": d.Device.Name,
+		"kind":         d.Kind,
+		"method":       d.Method,
+		"params":       d.Params,
+		"id":           d.ID,
+		"timestamp":    time.Now().UnixMilli(),
+	}
+
+	return json.Marshal(out)
 }
 
 func (e *Engine) convertDeclarative(conv *Converter, raw []byte, meta map[string]string) (*UplinkEvent, error) {
 	var def DeclarativeDefinition
 	if len(conv.Definition) > 0 {
 		if err := json.Unmarshal(conv.Definition, &def); err != nil {
-			return nil, errs.InvalidArgument("invalid converter definition JSON: " + err.Error())
+			var strDef string
+			if strErr := json.Unmarshal(conv.Definition, &strDef); strErr == nil {
+				if err2 := json.Unmarshal([]byte(strDef), &def); err2 != nil {
+					return nil, errs.InvalidArgument("invalid converter definition JSON: " + err2.Error())
+				}
+			} else {
+				return nil, errs.InvalidArgument("invalid converter definition JSON: " + err.Error())
+			}
 		}
 	}
 
@@ -67,7 +92,7 @@ func (e *Engine) convertDeclarative(conv *Converter, raw []byte, meta map[string
 		meta = make(map[string]string)
 	}
 
-	// 1. Parse JSON if format is json, chirpstack, ttn or default
+	// 1. Parse payload if format is json, csv, hex, chirpstack, ttn or default
 	var parsed map[string]any
 	if def.Format == "hex" {
 		// Hex string conversion
@@ -80,6 +105,18 @@ func (e *Engine) convertDeclarative(conv *Converter, raw []byte, meta map[string
 			"hex":   hexStr,
 			"bytes": b,
 			"len":   len(b),
+		}
+	} else if def.Format == "csv" {
+		line := strings.TrimSpace(string(raw))
+		cols := strings.Split(line, ",")
+		parsed = make(map[string]any)
+		for idx, col := range cols {
+			colTrim := strings.TrimSpace(col)
+			if f, err := strconv.ParseFloat(colTrim, 64); err == nil {
+				parsed[strconv.Itoa(idx)] = f
+			} else {
+				parsed[strconv.Itoa(idx)] = colTrim
+			}
 		}
 	} else {
 		// Try parsing as JSON map
@@ -378,3 +415,133 @@ func toInt64(val any) (int64, bool) {
 	}
 	return 0, false
 }
+
+// ExpressionDefinition holds configuration for ModeExpression converters.
+type ExpressionDefinition struct {
+	DeclarativeDefinition
+	Expressions map[string]string `json:"expressions,omitempty"` // target -> expression e.g. "telemetry.fahrenheit": "temp * 1.8 + 32"
+}
+
+func (e *Engine) convertExpression(conv *Converter, raw []byte, meta map[string]string) (*UplinkEvent, error) {
+	// First perform declarative base mapping
+	event, err := e.convertDeclarative(conv, raw, meta)
+	if err != nil {
+		return nil, err
+	}
+
+	var expDef ExpressionDefinition
+	if len(conv.Definition) > 0 {
+		if err := json.Unmarshal(conv.Definition, &expDef); err != nil {
+			var strDef string
+			if strErr := json.Unmarshal(conv.Definition, &strDef); strErr == nil {
+				_ = json.Unmarshal([]byte(strDef), &expDef)
+			}
+		}
+	}
+
+	if len(expDef.Expressions) == 0 {
+		return event, nil
+	}
+
+	// Evaluate custom expressions
+	for target, exprStr := range expDef.Expressions {
+		val := evalLinearExpr(exprStr, event)
+		if val != nil {
+			if strings.HasPrefix(target, "telemetry.") {
+				k := strings.TrimPrefix(target, "telemetry.")
+				if len(event.Telemetry) == 0 {
+					event.Telemetry = append(event.Telemetry, TsBatch{
+						Ts:     time.Now().UnixMilli(),
+						Values: make(map[string]any),
+					})
+				}
+				event.Telemetry[0].Values[k] = val
+			} else if strings.HasPrefix(target, "attributes.") {
+				k := strings.TrimPrefix(target, "attributes.")
+				event.Attributes[k] = val
+			}
+		}
+	}
+
+	return event, nil
+}
+
+func evalLinearExpr(exprStr string, event *UplinkEvent) any {
+	exprStr = strings.TrimSpace(exprStr)
+	if exprStr == "" {
+		return nil
+	}
+
+	// Tokenize simple linear expression e.g. "temp * 1.8 + 32" or "raw / 100"
+	tokens := strings.Fields(exprStr)
+	if len(tokens) == 1 {
+		// Direct key lookup
+		return lookupEventVal(tokens[0], event)
+	}
+
+	if len(tokens) >= 3 {
+		leftVal := lookupEventVal(tokens[0], event)
+		fVal, ok := toFloat64(leftVal)
+		if !ok {
+			return nil
+		}
+
+		op := tokens[1]
+		rightNum, err := strconv.ParseFloat(tokens[2], 64)
+		if err != nil {
+			return nil
+		}
+
+		switch op {
+		case "*":
+			fVal *= rightNum
+		case "/":
+			if rightNum != 0 {
+				fVal /= rightNum
+			}
+		case "+":
+			fVal += rightNum
+		case "-":
+			fVal -= rightNum
+		}
+
+		// Optional chained offset e.g. "temp * 1.8 + 32" (5 tokens)
+		if len(tokens) == 5 {
+			op2 := tokens[3]
+			rightNum2, err := strconv.ParseFloat(tokens[4], 64)
+			if err == nil {
+				switch op2 {
+				case "+":
+					fVal += rightNum2
+				case "-":
+					fVal -= rightNum2
+				case "*":
+					fVal *= rightNum2
+				case "/":
+					if rightNum2 != 0 {
+						fVal /= rightNum2
+					}
+				}
+			}
+		}
+		return fVal
+	}
+
+	return nil
+}
+
+func lookupEventVal(key string, event *UplinkEvent) any {
+	if len(event.Telemetry) > 0 {
+		if v, ok := event.Telemetry[0].Values[key]; ok {
+			return v
+		}
+	}
+	if v, ok := event.Attributes[key]; ok {
+		return v
+	}
+	if v, ok := event.Meta[key]; ok {
+		return v
+	}
+	return nil
+}
+

@@ -58,8 +58,10 @@ type Integration struct {
 	DownlinkConverterID ids.ID          `json:"downlink_converter_id,omitempty"`
 	RoutingKey          string          `json:"routing_key"`
 	Config              json.RawMessage `json:"config"`
+	SecretsRef          json.RawMessage `json:"secrets_ref,omitempty"`
 	AllowCreateDevice   bool            `json:"allow_create_device"`
 	DefaultDeviceType   string          `json:"default_device_type"`
+	Remote              bool            `json:"remote,omitempty"`
 	Version             int             `json:"version"`
 }
 

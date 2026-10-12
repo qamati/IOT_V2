@@ -28,6 +28,7 @@ import (
 	"github.com/qamati/IOT_V2/internal/rule"
 	"github.com/qamati/IOT_V2/internal/scada"
 	"github.com/qamati/IOT_V2/internal/telemetry"
+	transportcoap "github.com/qamati/IOT_V2/internal/transport/coap"
 	transportmqtt "github.com/qamati/IOT_V2/internal/transport/mqtt"
 	"github.com/qamati/IOT_V2/pkg/bus"
 	"github.com/qamati/IOT_V2/pkg/bus/mem"
@@ -196,17 +197,20 @@ func main() {
 	ruleEngine := rule.NewEngineWithStore(ruleStore, ruleServices, logger)
 	var rpcSvc rpc.Service
 	var otaSvc ota.Service
+	var integrationSvc integration.Service
 	if pool != nil {
 		rpcStore := rpc.NewPostgresStore(pool)
 		rpcSvc = rpc.NewDefaultService(rpcStore, logger)
 		otaStore := ota.NewPostgresStore(pool)
 		otaSvc = ota.NewService(otaStore, attrStore, logger)
-		logger.Info("durable PostgreSQL stores initialized for Downlink RPC and OTA Management")
+		integStore := integration.NewPostgresStore(pool)
+		integrationSvc = integration.NewService(integStore, devMgr, tsStore, attrStore, tracker, ruleEngine)
+		logger.Info("durable PostgreSQL stores initialized for Downlink RPC, OTA Management, and Integrations & Converters")
 	} else {
 		rpcSvc = rpc.NewMemoryService()
 		otaSvc = ota.NewService(nil, attrStore, logger)
+		integrationSvc = integration.NewMemoryService(devMgr, tsStore, attrStore, tracker, ruleEngine)
 	}
-	integrationSvc := integration.NewMemoryService(devMgr, tsStore, attrStore, tracker, ruleEngine)
 	edgeHub := edge.NewMemoryHub(tsStore, alarmSvc)
 
 	// Seed demo SCADA process tags for Water Treatment HMI
@@ -517,6 +521,19 @@ func main() {
 		}()
 		return mqttServer.Serve()
 	})
+
+	// Background task: RFC 7252 CoAP UDP server
+	coapServer := transportcoap.NewServer(":5683", devMgr, tsStore, attrStore, tracker, ruleEngine)
+	if err := coapServer.Start(ctx); err != nil {
+		logger.Warn("failed to start CoAP UDP transport (port 5683 might be in use or restricted)", "error", err)
+	} else {
+		logger.Info("started lightweight RFC 7252 CoAP UDP transport on :5683")
+		s.AddTask(func(ctx context.Context) error {
+			<-ctx.Done()
+			coapServer.Stop()
+			return nil
+		})
+	}
 
 	if err := s.Run(ctx); err != nil {
 		logger.Error("service terminated with error", "error", err)

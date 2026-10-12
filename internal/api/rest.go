@@ -168,8 +168,9 @@ func (a *API) setupRoutes() {
 		// Realtime WebSocket Gateway: GET /api/v1/ws
 		r.Get("/ws", a.handleWebSocket)
 
-		// Public Integration Webhook Endpoint
+		// Public Integration Webhook Endpoints
 		r.Post("/integrations/webhook/{routingKey}", a.handleIntegrationWebhook)
+		r.Post("/integrations/{routingKey}/webhook", a.handleIntegrationWebhook)
 
 		// Public Edge Node Store-and-Forward Sync Endpoint
 		r.Post("/edge/sync", a.handleEdgeSync)

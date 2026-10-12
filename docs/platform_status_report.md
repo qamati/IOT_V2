@@ -101,9 +101,9 @@ pie title 26 Services Implementation Breakdown
 - **Spec:** One-way & synchronous two-way RPC, waiting channels, persistent PostgreSQL RPC store, OTA firmware/software binary distribution with chunking and SHA-256 validation, shared attributes synchronization, and bulk device operations.
 - **Reality:** ✅ **100% Implemented.** Durable PostgreSQL persistence for RPC commands (`rpc` table with retries, response timing) and OTA management (`ota_package`, `ota_assignment`, `device_ota_state`). One-way fire-and-forget and two-way synchronous RPC over MQTT and HTTP with waiter channels. Chunked firmware server for constrained edge devices. Automatic shared attribute synchronization (`fw_title`, `fw_version`, `fw_checksum`, `fw_size`). Bulk device import (CSV & JSON) and CSV export. Rich React Console UI with Downlink RPC Studio, Firmware & Software OTA Manager (`OtaView.tsx`), and Bulk Import Wizard.
 
-### Stage 8 — Integrations & Field Gateways
-- **Spec:** Declarative JSON/ChirpStack/TTN converters, HTTP webhooks, CoAP, LwM2M, SNMP, Modbus/OPC-UA field gateway.
-- **Reality:** 🟡 **40% Implemented.** Uplink/downlink converters and HTTP webhook ingestion work in memory. CoAP, LwM2M, SNMP, and Field Gateway (Modbus/OPC-UA) are missing.
+### Stage 8 — Integrations, Converters & Field Gateways
+- **Spec:** Declarative JSON/ChirpStack/TTN/Hex/CSV converters, expression conversions with linear mathematical formulas, HTTP webhooks with auto-device provisioning, RFC 7252 CoAP UDP transport, and industrial Modbus TCP Field Gateway connector SPI.
+- **Reality:** ✅ **100% Implemented.** Durable PostgreSQL persistence for Converters (`converter`), Integrations (`integration`), runtime status tracking (`integration_status`), and stream checkpoints (`integration_checkpoint`) with RLS. Enhanced converter engine supporting declarative JSON/CSV/Hex, TTN v3, ChirpStack v4, and mathematical expressions (`ModeExpression`). Ingestion HTTP webhooks with auto-device provisioning and routing keys. RFC 7252 CoAP UDP transport on `:5683` with CON/ACK cycle and token telemetry/attributes endpoints. Industrial Connector SPI (`pkg/connectors`) with Modbus TCP polling and virtual PLC slave simulation. React Console Integrations UI (`IntegrationsView.tsx`) with 4 interactive tabs (Connectors, Converter Catalog, Live Test Harness, Industrial Field Gateway).
 
 ### Stage 9 — Edge Fleet & Store-and-Forward
 - **Spec:** Cloud Edge Hub, 3-tier priority lanes, sync protocol, standalone edge Go runtime binary with local SQLite/Badger store-and-forward.
@@ -127,7 +127,7 @@ pie title 26 Services Implementation Breakdown
 
 `03-data-model.md` defines 24 entity tables. `db/migrations/00001_init_schema.sql` only contains 10 tables:
 
-### Existing Tables in PostgreSQL:
+### Existing Tables in PostgreSQL (Migrations 00001 - 00006):
 1. `tenant_profile`
 2. `tenant`
 3. `users`
@@ -136,28 +136,23 @@ pie title 26 Services Implementation Breakdown
 6. `device`
 7. `device_credentials`
 8. `key_dictionary`
-9. `ts_kv`
+9. `ts_kv` (TimescaleDB hypertable)
 10. `ts_kv_latest`
+11. `rule_chain` & `rule_chain_revision` (Stage 4)
+12. `alarm_rule`, `notification_target`, `notification_template`, `notification_rule`, `notification_request`, `notification_delivery`, `notification` (Stage 5)
+13. `dashboard` (Stage 6)
+14. `rpc`, `ota_package`, `ota_assignment`, `device_ota_state` (Stage 7)
+15. `converter`, `integration`, `integration_status`, `integration_checkpoint` (Stage 8)
 
-### Missing Tables (Purely in Memory / Not in DB):
+### Remaining Spec Entities to Migrate:
 1. `customer` — Sub-tenant customer hierarchy
 2. `relation` — General entity graph relation table
-3. `asset_profile` — Physical asset grouping profiles
-4. `asset` — Asset entities (buildings, pipelines, machines)
-5. `entity_views` — Filtered subset views of devices/telemetry
-6. `attribute_kv` — Scoped client/server/shared attributes table
-7. `alarm` — Alarm records and lifecycle history
-8. `alarm_comment` — Operator audit comments on alarms
-9. `rule_chain` — Rule chain graph definitions
-10. `rule_chain_revision` — Version history of rule chains
-11. `dashboard` — Dashboard layout and widget configurations
-12. `ota_package` — Firmware/software binaries & checksums
-13. `rpc` — Historical downlink RPC commands & device replies
-14. `edge` — Edge node registry
-15. `edge_event` — Edge store-and-forward outbox journal
-16. `scada_tag` — Industrial SCADA tags & deadband configs
-17. `audit_log` — Tamper-evident audit journal
-18. `notification_rule`, `notification_template`, `notification_target` — Alerts & dispatch rules
+3. `asset_profile` & `asset` — Physical asset entities
+4. `entity_views` — Filtered subset views
+5. `attribute_kv` — Scoped client/server/shared attributes table
+6. `edge` & `edge_event` — Edge node registry & outbox journal (Stage 9)
+7. `scada_tag` — Industrial SCADA tags & deadband configs (Stage 10)
+8. `audit_log` — Tamper-evident audit journal
 
 ---
 

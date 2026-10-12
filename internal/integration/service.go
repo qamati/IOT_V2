@@ -36,8 +36,9 @@ type Service interface {
 	ProcessWebhook(ctx context.Context, routingKey string, payload []byte, headers map[string]string) (*UplinkEvent, error)
 }
 
-type memoryService struct {
+type defaultService struct {
 	mu           sync.RWMutex
+	store        Store
 	converters   map[ids.ID]*Converter
 	integrations map[ids.ID]*Integration
 	byRoutingKey map[string]ids.ID
@@ -52,14 +53,16 @@ type memoryService struct {
 	ruleEngine *rule.Engine
 }
 
-func NewMemoryService(
+func NewService(
+	store Store,
 	devMgr *core.DeviceManager,
 	ts telemetry.Store,
 	attrs telemetry.AttributeStore,
 	tracker devstate.Tracker,
 	ruleEng *rule.Engine,
 ) Service {
-	s := &memoryService{
+	s := &defaultService{
+		store:        store,
 		converters:   make(map[ids.ID]*Converter),
 		integrations: make(map[ids.ID]*Integration),
 		byRoutingKey: make(map[string]ids.ID),
@@ -77,7 +80,17 @@ func NewMemoryService(
 	return s
 }
 
-func (s *memoryService) seedDefaultConverters() {
+func NewMemoryService(
+	devMgr *core.DeviceManager,
+	ts telemetry.Store,
+	attrs telemetry.AttributeStore,
+	tracker devstate.Tracker,
+	ruleEng *rule.Engine,
+) Service {
+	return NewService(nil, devMgr, ts, attrs, tracker, ruleEng)
+}
+
+func (s *defaultService) seedDefaultConverters() {
 	// Seed 1: JSON Telemetry Webhook Converter
 	c1ID := ids.MustNew()
 	def1, _ := json.Marshal(DeclarativeDefinition{
@@ -91,7 +104,7 @@ func (s *memoryService) seedDefaultConverters() {
 			{Source: "status.firmware", Target: "attributes.firmware_version", Type: "string"},
 		},
 	})
-	s.converters[c1ID] = &Converter{
+	conv1 := &Converter{
 		ID:         c1ID,
 		TenantID:   ids.ID{}, // System template
 		Name:       "Default JSON Webhook Converter",
@@ -100,6 +113,7 @@ func (s *memoryService) seedDefaultConverters() {
 		Definition: def1,
 		Version:    1,
 	}
+	s.converters[c1ID] = conv1
 
 	// Seed 2: LoRaWAN ChirpStack Converter
 	c2ID := ids.MustNew()
@@ -108,7 +122,7 @@ func (s *memoryService) seedDefaultConverters() {
 		DeviceNamePath: "deviceInfo.deviceName",
 		DeviceType:     "lorawan_node",
 	})
-	s.converters[c2ID] = &Converter{
+	conv2 := &Converter{
 		ID:         c2ID,
 		TenantID:   ids.ID{},
 		Name:       "ChirpStack LoRaWAN Converter",
@@ -117,9 +131,38 @@ func (s *memoryService) seedDefaultConverters() {
 		Definition: def2,
 		Version:    1,
 	}
+	s.converters[c2ID] = conv2
+
+	// Seed 3: The Things Network (TTN) Converter
+	c3ID := ids.MustNew()
+	def3, _ := json.Marshal(DeclarativeDefinition{
+		Format:         "ttn",
+		DeviceNamePath: "end_device_ids.device_id",
+		DeviceType:     "lorawan_ttn_node",
+	})
+	conv3 := &Converter{
+		ID:         c3ID,
+		TenantID:   ids.ID{},
+		Name:       "The Things Network (TTN) Converter",
+		Direction:  DirectionUplink,
+		Mode:       ModeDeclarative,
+		Definition: def3,
+		Version:    1,
+	}
+	s.converters[c3ID] = conv3
+
+	if s.store != nil {
+		ctx := context.Background()
+		existing, _ := s.store.ListConverters(ctx, ids.ID{})
+		if len(existing) == 0 {
+			_ = s.store.CreateConverter(ctx, conv1)
+			_ = s.store.CreateConverter(ctx, conv2)
+			_ = s.store.CreateConverter(ctx, conv3)
+		}
+	}
 }
 
-func (s *memoryService) CreateConverter(ctx context.Context, c *Converter) error {
+func (s *defaultService) CreateConverter(ctx context.Context, c *Converter) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -129,11 +172,23 @@ func (s *memoryService) CreateConverter(ctx context.Context, c *Converter) error
 	if c.Version == 0 {
 		c.Version = 1
 	}
+
+	if s.store != nil {
+		if err := s.store.CreateConverter(ctx, c); err != nil {
+			return err
+		}
+	}
 	s.converters[c.ID] = c
 	return nil
 }
 
-func (s *memoryService) GetConverter(ctx context.Context, tenantID, converterID ids.ID) (*Converter, error) {
+func (s *defaultService) GetConverter(ctx context.Context, tenantID, converterID ids.ID) (*Converter, error) {
+	if s.store != nil {
+		if c, err := s.store.GetConverter(ctx, tenantID, converterID); err == nil && c != nil {
+			return c, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -144,7 +199,14 @@ func (s *memoryService) GetConverter(ctx context.Context, tenantID, converterID 
 	return c, nil
 }
 
-func (s *memoryService) ListConverters(ctx context.Context, tenantID ids.ID) ([]*Converter, error) {
+func (s *defaultService) ListConverters(ctx context.Context, tenantID ids.ID) ([]*Converter, error) {
+	if s.store != nil {
+		convs, err := s.store.ListConverters(ctx, tenantID)
+		if err == nil && len(convs) > 0 {
+			return convs, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -157,19 +219,18 @@ func (s *memoryService) ListConverters(ctx context.Context, tenantID ids.ID) ([]
 	return result, nil
 }
 
-func (s *memoryService) DeleteConverter(ctx context.Context, tenantID, converterID ids.ID) error {
+func (s *defaultService) DeleteConverter(ctx context.Context, tenantID, converterID ids.ID) error {
+	if s.store != nil {
+		_ = s.store.DeleteConverter(ctx, tenantID, converterID)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	c, ok := s.converters[converterID]
-	if !ok || (c.TenantID != ids.Nil && c.TenantID != tenantID) {
-		return errs.NotFound("converter not found")
-	}
 	delete(s.converters, converterID)
 	return nil
 }
-
-func (s *memoryService) CreateIntegration(ctx context.Context, i *Integration) error {
+func (s *defaultService) CreateIntegration(ctx context.Context, i *Integration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -181,6 +242,12 @@ func (s *memoryService) CreateIntegration(ctx context.Context, i *Integration) e
 	}
 	if i.Version == 0 {
 		i.Version = 1
+	}
+
+	if s.store != nil {
+		if err := s.store.CreateIntegration(ctx, i); err != nil {
+			return err
+		}
 	}
 
 	s.integrations[i.ID] = i
@@ -195,7 +262,13 @@ func (s *memoryService) CreateIntegration(ctx context.Context, i *Integration) e
 	return nil
 }
 
-func (s *memoryService) GetIntegration(ctx context.Context, tenantID, integrationID ids.ID) (*Integration, error) {
+func (s *defaultService) GetIntegration(ctx context.Context, tenantID, integrationID ids.ID) (*Integration, error) {
+	if s.store != nil {
+		if i, err := s.store.GetIntegration(ctx, tenantID, integrationID); err == nil && i != nil {
+			return i, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -206,7 +279,13 @@ func (s *memoryService) GetIntegration(ctx context.Context, tenantID, integratio
 	return i, nil
 }
 
-func (s *memoryService) GetIntegrationByRoutingKey(ctx context.Context, routingKey string) (*Integration, error) {
+func (s *defaultService) GetIntegrationByRoutingKey(ctx context.Context, routingKey string) (*Integration, error) {
+	if s.store != nil {
+		if i, err := s.store.GetIntegrationByRoutingKey(ctx, routingKey); err == nil && i != nil {
+			return i, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -217,7 +296,14 @@ func (s *memoryService) GetIntegrationByRoutingKey(ctx context.Context, routingK
 	return s.integrations[id], nil
 }
 
-func (s *memoryService) ListIntegrations(ctx context.Context, tenantID ids.ID) ([]*Integration, error) {
+func (s *defaultService) ListIntegrations(ctx context.Context, tenantID ids.ID) ([]*Integration, error) {
+	if s.store != nil {
+		integs, err := s.store.ListIntegrations(ctx, tenantID)
+		if err == nil && len(integs) > 0 {
+			return integs, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -230,7 +316,11 @@ func (s *memoryService) ListIntegrations(ctx context.Context, tenantID ids.ID) (
 	return result, nil
 }
 
-func (s *memoryService) DeleteIntegration(ctx context.Context, tenantID, integrationID ids.ID) error {
+func (s *defaultService) DeleteIntegration(ctx context.Context, tenantID, integrationID ids.ID) error {
+	if s.store != nil {
+		_ = s.store.DeleteIntegration(ctx, tenantID, integrationID)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -245,7 +335,13 @@ func (s *memoryService) DeleteIntegration(ctx context.Context, tenantID, integra
 	return nil
 }
 
-func (s *memoryService) GetStatus(ctx context.Context, integrationID ids.ID) (*IntegrationStatus, error) {
+func (s *defaultService) GetStatus(ctx context.Context, integrationID ids.ID) (*IntegrationStatus, error) {
+	if s.store != nil {
+		if st, err := s.store.GetStatus(ctx, integrationID); err == nil && st != nil {
+			return st, nil
+		}
+	}
+
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -256,18 +352,18 @@ func (s *memoryService) GetStatus(ctx context.Context, integrationID ids.ID) (*I
 	return st, nil
 }
 
-func (s *memoryService) GetDebugEvents(ctx context.Context, integrationID ids.ID) ([]*DebugEvent, error) {
+func (s *defaultService) GetDebugEvents(ctx context.Context, integrationID ids.ID) ([]*DebugEvent, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	return s.debugLogs[integrationID], nil
 }
 
-func (s *memoryService) TestConverter(ctx context.Context, conv *Converter, payload []byte, meta map[string]string) (*UplinkEvent, error) {
+func (s *defaultService) TestConverter(ctx context.Context, conv *Converter, payload []byte, meta map[string]string) (*UplinkEvent, error) {
 	return s.engine.Convert(conv, payload, meta)
 }
 
-func (s *memoryService) ProcessWebhook(ctx context.Context, routingKey string, payload []byte, headers map[string]string) (*UplinkEvent, error) {
+func (s *defaultService) ProcessWebhook(ctx context.Context, routingKey string, payload []byte, headers map[string]string) (*UplinkEvent, error) {
 	integ, err := s.GetIntegrationByRoutingKey(ctx, routingKey)
 	if err != nil {
 		return nil, err
@@ -279,9 +375,14 @@ func (s *memoryService) ProcessWebhook(ctx context.Context, routingKey string, p
 
 	// Lookup uplink converter
 	var conv *Converter
-	s.mu.RLock()
-	conv = s.converters[integ.UplinkConverterID]
-	s.mu.RUnlock()
+	if integ.UplinkConverterID != ids.Nil {
+		conv, _ = s.GetConverter(ctx, integ.TenantID, integ.UplinkConverterID)
+	}
+	if conv == nil {
+		s.mu.RLock()
+		conv = s.converters[integ.UplinkConverterID]
+		s.mu.RUnlock()
+	}
 
 	if conv == nil {
 		s.recordError(integ.ID, "configured uplink converter not found")
@@ -342,7 +443,7 @@ func (s *memoryService) ProcessWebhook(ctx context.Context, routingKey string, p
 	return event, nil
 }
 
-func (s *memoryService) resolveIdentity(ctx context.Context, tenantID ids.ID, name, label string, allowCreate bool) (ids.ID, bool, error) {
+func (s *defaultService) resolveIdentity(ctx context.Context, tenantID ids.ID, name, label string, allowCreate bool) (ids.ID, bool, error) {
 	if s.devManager == nil {
 		return ids.MustNew(), false, nil
 	}
@@ -369,11 +470,10 @@ func (s *memoryService) resolveIdentity(ctx context.Context, tenantID ids.ID, na
 	return dev.ID, true, nil
 }
 
-func (s *memoryService) recordSuccess(id ids.ID, autoCreated bool) {
+func (s *defaultService) recordSuccess(id ids.ID, autoCreated bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if st, ok := s.statuses[id]; ok {
+	st, ok := s.statuses[id]
+	if ok {
 		st.State = "RUNNING"
 		st.LastOkTs = time.Now().UnixMilli()
 		st.LastError = ""
@@ -382,19 +482,28 @@ func (s *memoryService) recordSuccess(id ids.ID, autoCreated bool) {
 			st.Counters["auto_created"]++
 		}
 	}
-}
+	s.mu.Unlock()
 
-func (s *memoryService) recordError(id ids.ID, errMsg string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if st, ok := s.statuses[id]; ok {
-		st.LastError = errMsg
-		st.Counters["errors"]++
+	if ok && s.store != nil {
+		_ = s.store.UpsertStatus(context.Background(), st)
 	}
 }
 
-func (s *memoryService) recordDebug(id ids.ID, dir, payload string, meta map[string]string, success bool, errMsg string, result *UplinkEvent) {
+func (s *defaultService) recordError(id ids.ID, errMsg string) {
+	s.mu.Lock()
+	st, ok := s.statuses[id]
+	if ok {
+		st.LastError = errMsg
+		st.Counters["errors"]++
+	}
+	s.mu.Unlock()
+
+	if ok && s.store != nil {
+		_ = s.store.UpsertStatus(context.Background(), st)
+	}
+}
+
+func (s *defaultService) recordDebug(id ids.ID, dir, payload string, meta map[string]string, success bool, errMsg string, result *UplinkEvent) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

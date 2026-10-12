@@ -418,6 +418,19 @@ class ApiClient {
     return Array.isArray(res) ? res : [];
   }
 
+  async createConverter(converter: Partial<Converter>): Promise<Converter> {
+    return this.request<Converter>('/converters', {
+      method: 'POST',
+      body: JSON.stringify(converter),
+    });
+  }
+
+  async deleteConverter(id: string): Promise<void> {
+    return this.request<void>(`/converters/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   async testConverter(converter: Converter, payload: string, metadata: Record<string, string> = {}): Promise<{ success: boolean; event: any }> {
     return this.request<{ success: boolean; event: any }>('/converters/test', {
       method: 'POST',
@@ -428,6 +441,19 @@ class ApiClient {
   async listIntegrations(): Promise<Integration[]> {
     const res = await this.request<Integration[]>('/integrations');
     return Array.isArray(res) ? res : [];
+  }
+
+  async createIntegration(integration: Partial<Integration>): Promise<Integration> {
+    return this.request<Integration>('/integrations', {
+      method: 'POST',
+      body: JSON.stringify(integration),
+    });
+  }
+
+  async deleteIntegration(id: string): Promise<void> {
+    return this.request<void>(`/integrations/${id}`, {
+      method: 'DELETE',
+    });
   }
 
   async getIntegrationStatus(id: string): Promise<IntegrationStatus> {
