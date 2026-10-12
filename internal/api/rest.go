@@ -20,6 +20,7 @@ import (
 	"github.com/qamati/IOT_V2/internal/integration"
 	"github.com/qamati/IOT_V2/internal/model"
 	"github.com/qamati/IOT_V2/internal/notification"
+	"github.com/qamati/IOT_V2/internal/ota"
 	"github.com/qamati/IOT_V2/internal/realtime"
 	"github.com/qamati/IOT_V2/internal/rpc"
 	"github.com/qamati/IOT_V2/internal/rule"
@@ -43,6 +44,7 @@ type API struct {
 	realtime      realtime.Service
 	dashboards    dashboard.Service
 	rpcSvc        rpc.Service
+	otaSvc        ota.Service
 	integrations  integration.Service
 	edgeHub       edge.Service
 	scadaSvc      scada.Service
@@ -67,6 +69,7 @@ func NewAPI(idSvc *identity.Service, devMgr *core.DeviceManager, tsStore telemet
 		notifications: notifSvc,
 		dashboards:    dashboard.NewMemoryService(),
 		rpcSvc:        rpc.NewMemoryService(),
+		otaSvc:        ota.NewService(nil, nil, nil),
 		integrations:  integration.NewMemoryService(devMgr, tsStore, attrs, tracker, nil),
 		edgeHub:       edge.NewMemoryHub(tsStore, alarmSvc),
 		scadaSvc:      scada.NewMemoryService(),
@@ -111,6 +114,11 @@ func (a *API) WithDashboards(d dashboard.Service) *API {
 
 func (a *API) WithRPC(r rpc.Service) *API {
 	a.rpcSvc = r
+	return a
+}
+
+func (a *API) WithOTA(o ota.Service) *API {
+	a.otaSvc = o
 	return a
 }
 
@@ -177,6 +185,8 @@ func (a *API) setupRoutes() {
 		r.Get("/{token}/rpc", a.handleDeviceRpcPoll)
 		// 5. Device RPC response: POST /api/v1/{token}/rpc/{requestId}
 		r.Post("/{token}/rpc/{requestId}", a.handleDeviceRpcResponse)
+		// 6. Device Firmware chunk download: GET /api/v1/{token}/firmware
+		r.Get("/{token}/firmware", a.handleDeviceFirmwareChunkDownload)
 
 		// Protected management endpoints
 		r.Group(func(protected chi.Router) {
@@ -192,6 +202,8 @@ func (a *API) setupRoutes() {
 			protected.Post("/devices/{id}/state/override", a.handleOverrideDeviceState)
 			protected.Get("/devstate/summary", a.handleGetDevStateSummary)
 			protected.Delete("/devices/{id}", a.handleDeleteDevice)
+			protected.Post("/devices/bulk/import", a.handleBulkImportDevices)
+			protected.Get("/devices/bulk/export", a.handleBulkExportDevices)
 
 			// Telemetry queries
 			protected.Get("/telemetry/DEVICE/{id}/values/latest", a.handleGetLatestTelemetry)
@@ -245,6 +257,19 @@ func (a *API) setupRoutes() {
 			protected.Post("/plugins/rpc/oneway/DEVICE/{id}", a.handleSendOneWayRpc)
 			protected.Post("/plugins/rpc/twoway/DEVICE/{id}", a.handleSendTwoWayRpc)
 			protected.Get("/plugins/rpc/DEVICE/{id}", a.handleGetDeviceRpcHistory)
+			protected.Get("/rpc/persistent/{id}", a.handleGetPersistentRpc)
+			protected.Delete("/rpc/persistent/{id}", a.handleDeletePersistentRpc)
+
+			// Stage 7: Firmware & Software OTA Management
+			protected.Get("/otaPackages", a.handleListOtaPackages)
+			protected.Post("/otaPackages", a.handleCreateOtaPackage)
+			protected.Get("/otaPackages/{id}", a.handleGetOtaPackage)
+			protected.Delete("/otaPackages/{id}", a.handleDeleteOtaPackage)
+			protected.Post("/otaPackages/{id}/upload", a.handleUploadOtaBinary)
+			protected.Get("/otaPackages/{id}/download", a.handleDownloadOtaBinary)
+			protected.Get("/otaPackages/{id}/fleet", a.handleListFleetOtaStates)
+			protected.Post("/devices/{id}/ota/assign", a.handleAssignDeviceOta)
+			protected.Get("/devices/{id}/ota/state", a.handleGetDeviceOtaState)
 
 			// Stage 8: Converters & Integrations
 			protected.Get("/converters", a.handleListConverters)
@@ -1317,5 +1342,53 @@ func (a *API) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Error(w, "realtime gateway not configured", http.StatusServiceUnavailable)
+}
+
+// GET /api/v1/rpc/persistent/{id}
+func (a *API) handleGetPersistentRpc(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	cmdID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid command id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	cmd, err := a.rpcSvc.GetRpcCommand(r.Context(), tenantID, cmdID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(cmd)
+}
+
+// DELETE /api/v1/rpc/persistent/{id}
+func (a *API) handleDeletePersistentRpc(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	cmdID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid command id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.rpcSvc.DeleteRpcCommand(r.Context(), tenantID, cmdID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 

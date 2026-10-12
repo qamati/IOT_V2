@@ -22,6 +22,7 @@ import (
 	"github.com/qamati/IOT_V2/internal/integration"
 	"github.com/qamati/IOT_V2/internal/model"
 	"github.com/qamati/IOT_V2/internal/notification"
+	"github.com/qamati/IOT_V2/internal/ota"
 	"github.com/qamati/IOT_V2/internal/realtime"
 	"github.com/qamati/IOT_V2/internal/rpc"
 	"github.com/qamati/IOT_V2/internal/rule"
@@ -193,7 +194,18 @@ func main() {
 		HTTPClient: http.DefaultClient,
 	}
 	ruleEngine := rule.NewEngineWithStore(ruleStore, ruleServices, logger)
-	rpcSvc := rpc.NewMemoryService()
+	var rpcSvc rpc.Service
+	var otaSvc ota.Service
+	if pool != nil {
+		rpcStore := rpc.NewPostgresStore(pool)
+		rpcSvc = rpc.NewDefaultService(rpcStore, logger)
+		otaStore := ota.NewPostgresStore(pool)
+		otaSvc = ota.NewService(otaStore, attrStore, logger)
+		logger.Info("durable PostgreSQL stores initialized for Downlink RPC and OTA Management")
+	} else {
+		rpcSvc = rpc.NewMemoryService()
+		otaSvc = ota.NewService(nil, attrStore, logger)
+	}
 	integrationSvc := integration.NewMemoryService(devMgr, tsStore, attrStore, tracker, ruleEngine)
 	edgeHub := edge.NewMemoryHub(tsStore, alarmSvc)
 
@@ -301,6 +313,15 @@ func main() {
 				},
 			})
 			_, _ = dashboardSvc.CreateDashboard(ctx, demoTenantID, "Environmental Station Alpha Dashboard", dashConfig)
+		}
+
+		// Seed demo firmware package for sample device
+		sampleFw, _ := otaSvc.CreatePackage(ctx, demoTenantID, model.OtaTypeFirmware, "ESP32 Sensor Firmware", "v2.2.0", "stable", "")
+		if sampleFw != nil {
+			sampleFwData := []byte("DEMO_FIRMWARE_BINARY_V2.2.0_HASH_VERIFIED_OK")
+			_, _ = otaSvc.UploadPackageBinary(ctx, demoTenantID, sampleFw.ID, "firmware-v2.2.0.bin", "application/octet-stream", sampleFwData)
+			_, _ = otaSvc.AssignPackage(ctx, demoTenantID, "FIRMWARE", sampleFw.ID, "DEVICE", sampleDev.ID)
+			logger.Info("seeded demo OTA firmware package and assigned to sample device", "version", "v2.2.0")
 		}
 	}
 
@@ -424,7 +445,10 @@ func main() {
 		logger.Error("failed to initialize MQTT server", "error", err)
 		os.Exit(1)
 	}
-	mqttServer.WithTracker(tracker)
+	mqttServer.WithTracker(tracker).
+		WithRpcService(rpcSvc).
+		WithOtaService(otaSvc)
+	rpcSvc.SetDispatcher(mqttServer)
 
 	// 7. REST API Router with full service attachments
 	apiSvc := api.NewAPI(idSvc, devMgr, tsStore, b).
@@ -434,6 +458,7 @@ func main() {
 		WithNotifications(notifSvc).
 		WithDashboards(dashboardSvc).
 		WithRPC(rpcSvc).
+		WithOTA(otaSvc).
 		WithIntegrations(integrationSvc).
 		WithEdge(edgeHub).
 		WithScada(scadaSvc).

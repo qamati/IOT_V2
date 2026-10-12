@@ -221,22 +221,80 @@ type RpcStatus string
 
 const (
 	RpcStatusQueued     RpcStatus = "QUEUED"
+	RpcStatusSent       RpcStatus = "SENT"
 	RpcStatusDelivered  RpcStatus = "DELIVERED"
 	RpcStatusSuccessful RpcStatus = "SUCCESSFUL"
 	RpcStatusTimeout    RpcStatus = "TIMEOUT"
+	RpcStatusExpired    RpcStatus = "EXPIRED"
 	RpcStatusFailed     RpcStatus = "FAILED"
 )
 
 // RpcCommand represents a server-to-device remote procedure call.
 type RpcCommand struct {
-	ID           ids.ID          `json:"id"`
-	TenantID     ids.ID          `json:"tenant_id"`
-	DeviceID     ids.ID          `json:"device_id"`
-	Method       string          `json:"method"`
-	Params       json.RawMessage `json:"params"`
-	TwoWay       bool            `json:"two_way"`
-	Status       RpcStatus       `json:"status"`
-	CreatedTime  int64           `json:"created_time"`
-	ResponseTime int64           `json:"response_time,omitempty"`
-	Response     json.RawMessage `json:"response,omitempty"`
+	ID             ids.ID          `json:"id"`
+	TenantID       ids.ID          `json:"tenant_id"`
+	DeviceID       ids.ID          `json:"device_id"`
+	RequestID      string          `json:"request_id,omitempty"`
+	Method         string          `json:"method"`
+	Params         json.RawMessage `json:"params"`
+	TwoWay         bool            `json:"two_way"`
+	Status         RpcStatus       `json:"status"`
+	Retries        int             `json:"retries"`
+	MaxRetries     int             `json:"max_retries"`
+	ExpirationTime int64           `json:"expiration_time"`
+	CreatedTime    int64           `json:"created_time"`
+	ResponseTime   int64           `json:"response_time,omitempty"`
+	Response       json.RawMessage `json:"response,omitempty"`
+	AdditionalInfo json.RawMessage `json:"additional_info,omitempty"`
 }
+
+// OtaPackageType defines firmware vs software OTA binary.
+type OtaPackageType string
+
+const (
+	OtaTypeFirmware OtaPackageType = "FIRMWARE"
+	OtaTypeSoftware OtaPackageType = "SOFTWARE"
+)
+
+// OtaPackage represents an uploaded or external firmware/software image.
+type OtaPackage struct {
+	ID                ids.ID          `json:"id"`
+	CreatedTime       int64           `json:"created_time"`
+	TenantID          ids.ID          `json:"tenant_id"`
+	Type              OtaPackageType  `json:"type"`
+	Title             string          `json:"title"`
+	Version           string          `json:"version"`
+	Tag               string          `json:"tag,omitempty"`
+	URL               string          `json:"url,omitempty"`
+	FileName          string          `json:"file_name,omitempty"`
+	ContentType       string          `json:"content_type,omitempty"`
+	ChecksumAlgorithm string          `json:"checksum_algorithm"` // SHA256, MD5, CRC32
+	Checksum          string          `json:"checksum"`
+	DataSize          int64           `json:"data_size"`
+	Data              []byte          `json:"-"` // Binary data kept out of JSON responses
+	AdditionalInfo    json.RawMessage `json:"additional_info,omitempty"`
+}
+
+// OtaAssignment assigns an OTA package to a Device Profile or single Device.
+type OtaAssignment struct {
+	ID          ids.ID `json:"id"`
+	CreatedTime int64  `json:"created_time"`
+	TenantID    ids.ID `json:"tenant_id"`
+	Kind        string `json:"kind"` // FIRMWARE, SOFTWARE
+	PackageID   ids.ID `json:"package_id"`
+	Scope       string `json:"scope"` // DEVICE_PROFILE, DEVICE
+	TargetID    ids.ID `json:"target_id"`
+}
+
+// DeviceOtaState tracks per-device rollout progress.
+type DeviceOtaState struct {
+	DeviceID  ids.ID  `json:"device_id"`
+	Kind      string  `json:"kind"`
+	PackageID *ids.ID `json:"package_id,omitempty"`
+	State     string  `json:"state"` // QUEUED, INITIATED, DOWNLOADING, DOWNLOADED, VERIFIED, UPDATING, UPDATED, FAILED, STALLED
+	Progress  float32 `json:"progress"`
+	Error     string  `json:"error,omitempty"`
+	UpdatedTs int64   `json:"updated_ts"`
+	Attempts  int     `json:"attempts"`
+}
+

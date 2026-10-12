@@ -51,8 +51,8 @@ pie title 26 Services Implementation Breakdown
 | **11 — Telemetry & Attributes** | `11-telemetry-attributes.md` | TimescaleDB `ts_kv`, scoped attributes (`CLIENT`, `SERVER`, `SHARED`) | Durable Timescale `ts_kv` + Postgres `attribute_kv` stores in `internal/telemetry` | ✅ **Complete** |
 | **12 — Alarm** | `12-alarm.md` | Alarm lifecycle, deduplication, ack/clear, severities | Durable Postgres `alarm` + `alarm_rule` tables, temporal evaluator (SIMPLE, DURATION, REPEATING) in `internal/alarm` | ✅ **Complete** |
 | **13 — Notification** | `13-notification.md` | Email, SMS, Slack, Web Push, delivery rules, templates | Multi-channel dispatcher (Mailpit SMTP, in-app inbox, webhooks), template interpolation, escalation engine in `internal/notification` | ✅ **Complete** |
-| **14 — RPC** | `14-rpc.md` | One-way and two-way downlink RPC, waiting channels | In-memory service (`internal/rpc/service.go`) | 🟡 **In-Memory only** (No `rpc` table, single-pod only) |
-| **15 — OTA** | `15-ota.md` | Firmware/software packages, checksums, rolling deployment waves | Zero implementation | 🔴 **Missing** |
+| **14 — RPC** | `14-rpc.md` | One-way and two-way downlink RPC, waiting channels | Durable Postgres `rpc` store (`internal/rpc/postgres_rpc.go`), two-way sync waiter channels, MQTT downlink dispatch, retry & sweep engine | ✅ **Complete** |
+| **15 — OTA** | `15-ota.md` | Firmware/software packages, checksums, rolling deployment waves | Durable Postgres `ota_package`, `ota_assignment`, `device_ota_state` tables, SHA-256 integrity, chunked distribution, shared attribute sync, and `OtaView.tsx` | ✅ **Complete** |
 | **16 — Realtime** | `16-realtime.md` | WebSocket server `/api/v1/ws`, subscription deduping | Gorilla WebSocket server at `/api/v1/ws`, JWT session registry, multiplexed channels (`TELEMETRY`, `ALARMS`, `NOTIFICATIONS`), direct-save worker streaming in `internal/realtime` | ✅ **Complete** |
 | **17 — Dashboards** | `17-dashboard-resources.md` | Dashboard configurations, widgets, JSON layout | Durable PostgreSQL `dashboard` store (`internal/dashboard/postgres_dashboard.go`) + React widgets with instant WebSocket push | ✅ **Complete** |
 | **18 — Integration & Converter** | `18-integration-converter.md` | Uplink/Downlink declarative converters, HTTP webhooks | In-memory service (`internal/integration/service.go`) | 🟡 **In-Memory only** (No DB persistence) |
@@ -98,8 +98,8 @@ pie title 26 Services Implementation Breakdown
 - **Reality:** ✅ **100% Implemented.** Realtime WebSocket Gateway mounted at `/api/v1/ws` with JWT session handshake, multiplexed channel subscriptions (`TELEMETRY`, `ALARMS`, `NOTIFICATIONS`), direct-save worker fan-out hooks, durable PostgreSQL dashboard persistence, and React console WebSockets client (`realtime.ts`) with live reactive updates replacing HTTP polling.
 
 ### Stage 7 — Downlink RPC & Device Management
-- **Spec:** One-way & synchronous two-way RPC, polling channels, OTA firmware binary distribution, bulk device operations.
-- **Reality:** 🟡 **45% Implemented.** In-memory RPC engine works. OTA package management (Service 15) and bulk device operations are completely missing.
+- **Spec:** One-way & synchronous two-way RPC, waiting channels, persistent PostgreSQL RPC store, OTA firmware/software binary distribution with chunking and SHA-256 validation, shared attributes synchronization, and bulk device operations.
+- **Reality:** ✅ **100% Implemented.** Durable PostgreSQL persistence for RPC commands (`rpc` table with retries, response timing) and OTA management (`ota_package`, `ota_assignment`, `device_ota_state`). One-way fire-and-forget and two-way synchronous RPC over MQTT and HTTP with waiter channels. Chunked firmware server for constrained edge devices. Automatic shared attribute synchronization (`fw_title`, `fw_version`, `fw_checksum`, `fw_size`). Bulk device import (CSV & JSON) and CSV export. Rich React Console UI with Downlink RPC Studio, Firmware & Software OTA Manager (`OtaView.tsx`), and Bulk Import Wizard.
 
 ### Stage 8 — Integrations & Field Gateways
 - **Spec:** Declarative JSON/ChirpStack/TTN converters, HTTP webhooks, CoAP, LwM2M, SNMP, Modbus/OPC-UA field gateway.

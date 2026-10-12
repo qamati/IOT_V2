@@ -30,7 +30,9 @@ import {
   Gauge,
   Network,
   GitMerge,
-  ExternalLink
+  ExternalLink,
+  Upload,
+  Download
 } from 'lucide-react';
 import { api } from './api';
 import { realtime } from './realtime';
@@ -40,6 +42,7 @@ import { ScadaView } from './components/ScadaView';
 import { EdgeView } from './components/EdgeView';
 import { RuleEngineView } from './components/RuleEngineView';
 import { AlarmsView } from './components/AlarmsView';
+import { OtaView } from './components/OtaView';
 
 export default function App() {
   const [token, setToken] = useState<string | null>(api.getToken());
@@ -48,8 +51,8 @@ export default function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
-  // Navigation: overview, devices, device-detail, dashboards, alarms, system, integrations, scada, edge, rules
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'dashboards' | 'alarms' | 'system' | 'integrations' | 'scada' | 'edge' | 'rules'>('devices');
+  // Navigation: overview, devices, device-detail, dashboards, alarms, system, integrations, scada, edge, rules, ota
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'devices' | 'device-detail' | 'dashboards' | 'alarms' | 'system' | 'integrations' | 'scada' | 'edge' | 'rules' | 'ota'>('devices');
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const [deviceDetailSubTab, setDeviceDetailSubTab] = useState<'telemetry' | 'attributes' | 'rpc'>('telemetry');
 
@@ -106,6 +109,17 @@ export default function App() {
   const [rpcParams, setRpcParams] = useState('{"relay": 1, "state": true}');
   const [rpcSending, setRpcSending] = useState(false);
   const [relayActive, setRelayActive] = useState(false);
+  const [rpcTwoWay, setRpcTwoWay] = useState(true);
+  const [rpcTimeoutMs, setRpcTimeoutMs] = useState(3000);
+  const [rpcLastResponse, setRpcLastResponse] = useState<any>(null);
+  const [rpcLastDurationMs, setRpcLastDurationMs] = useState<number | null>(null);
+
+  // Bulk Device Import State
+  const [showBulkImportModal, setShowBulkImportModal] = useState(false);
+  const [bulkImportFormat, setBulkImportFormat] = useState<'csv' | 'json'>('csv');
+  const [bulkImportText, setBulkImportText] = useState('');
+  const [bulkImportLoading, setBulkImportLoading] = useState(false);
+  const [bulkImportResult, setBulkImportResult] = useState<any>(null);
 
   // Simulator State
   const [simTemp, setSimTemp] = useState(24.5);
@@ -380,6 +394,10 @@ export default function App() {
     if (!devId) return;
 
     setRpcSending(true);
+    setRpcLastResponse(null);
+    setRpcLastDurationMs(null);
+    const startTime = Date.now();
+
     try {
       let parsedParams: any = {};
       try {
@@ -390,8 +408,8 @@ export default function App() {
 
       if (isTwoWay) {
         // Send two-way RPC (device simulation will answer)
-        const cmdPromise = api.sendTwoWayRpc(devId, rpcMethod, parsedParams, 4000);
-        // Simulate device picking up the RPC and responding after 300ms
+        const cmdPromise = api.sendTwoWayRpc(devId, rpcMethod, parsedParams, rpcTimeoutMs);
+        // Simulate device picking up the RPC and responding after 350ms
         const devToken = deviceTokens[devId];
         if (devToken) {
           setTimeout(async () => {
@@ -400,14 +418,20 @@ export default function App() {
               await api.respondDeviceRpc(devToken, pending.id, {
                 success: true,
                 executed_at: Date.now(),
+                method: rpcMethod,
                 state: parsedParams.state ?? true,
+                device: devId,
               });
             }
-          }, 400);
+          }, 350);
         }
-        await cmdPromise;
+        const cmd = await cmdPromise;
+        setRpcLastResponse(cmd);
+        setRpcLastDurationMs(Date.now() - startTime);
       } else {
-        await api.sendOneWayRpc(devId, rpcMethod, parsedParams);
+        const cmd = await api.sendOneWayRpc(devId, rpcMethod, parsedParams);
+        setRpcLastResponse(cmd);
+        setRpcLastDurationMs(Date.now() - startTime);
       }
 
       loadDeviceData(devId);
@@ -415,6 +439,59 @@ export default function App() {
       alert('RPC execution error: ' + err.message);
     } finally {
       setRpcSending(false);
+    }
+  };
+
+  const handleDeleteRpc = async (commandId: string) => {
+    try {
+      await api.deletePersistentRpc(commandId);
+      if (selectedDeviceId) {
+        const rpcs = await api.getRpcHistory(selectedDeviceId);
+        setRpcCommands(rpcs.data || []);
+      }
+    } catch (err: any) {
+      alert('Failed to delete command: ' + err.message);
+    }
+  };
+
+  const handleExportDevices = async () => {
+    try {
+      const csv = await api.bulkExportDevicesCsv();
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `devices_export_${Date.now()}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      alert(`Export failed: ${err.message}`);
+    }
+  };
+
+  const handleBulkImportSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!bulkImportText.trim()) return;
+    setBulkImportLoading(true);
+    setBulkImportResult(null);
+    try {
+      let payload: any = bulkImportText;
+      if (bulkImportFormat === 'json') {
+        try {
+          payload = JSON.parse(bulkImportText);
+        } catch (jsonErr: any) {
+          alert('Invalid JSON format: ' + jsonErr.message);
+          setBulkImportLoading(false);
+          return;
+        }
+      }
+      const res = await api.bulkImportDevices(payload);
+      setBulkImportResult(res);
+      await loadDevices();
+    } catch (err: any) {
+      alert(`Bulk import failed: ${err.message}`);
+    } finally {
+      setBulkImportLoading(false);
     }
   };
 
@@ -759,6 +836,13 @@ export default function App() {
           >
             <GitMerge size={18} />
             <span>Rule Engine</span>
+          </li>
+          <li 
+            className={`nav-item ${activeTab === 'ota' ? 'active' : ''}`}
+            onClick={() => setActiveTab('ota')}
+          >
+            <Cpu size={18} />
+            <span>Firmware & OTA</span>
           </li>
           <li 
             className={`nav-item ${activeTab === 'system' ? 'active' : ''}`}
@@ -1280,10 +1364,18 @@ export default function App() {
                   <h2 className="page-title">Device Fleet</h2>
                   <p className="page-subtitle">Provision, authenticate, and monitor edge devices</p>
                 </div>
-                <div style={{ display: 'flex', gap: '12px' }}>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                   <button className="btn btn-secondary" onClick={loadDevices}>
                     <RefreshCw size={15} className={devicesLoading ? 'animate-spin' : ''} />
                     <span>Refresh</span>
+                  </button>
+                  <button className="btn btn-secondary" onClick={handleExportDevices}>
+                    <Download size={15} />
+                    <span>Export CSV</span>
+                  </button>
+                  <button className="btn btn-secondary" onClick={() => { setBulkImportResult(null); setShowBulkImportModal(true); }}>
+                    <Upload size={15} />
+                    <span>Bulk Import</span>
                   </button>
                   <button className="btn btn-primary" onClick={() => setShowCreateModal(true)}>
                     <Plus size={16} />
@@ -1820,12 +1912,42 @@ export default function App() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
                   {/* Send RPC Form */}
                   <div className="card">
-                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                      <Terminal size={18} style={{ color: 'var(--accent-amber)' }} />
-                      Execute Remote Procedure Call (RPC)
-                    </h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', flexWrap: 'wrap', gap: '10px' }}>
+                      <h3 style={{ fontSize: '1.1rem', fontWeight: 700, margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <Terminal size={18} style={{ color: 'var(--accent-amber)' }} />
+                        Downlink RPC Command Studio
+                      </h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '0.85rem' }}>
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#cbd5e1' }}>
+                          <input 
+                            type="checkbox" 
+                            checked={rpcTwoWay} 
+                            onChange={e => setRpcTwoWay(e.target.checked)} 
+                          />
+                          Two-Way (Expect Device Response)
+                        </label>
+                        {rpcTwoWay && (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                            <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>Timeout:</span>
+                            <input 
+                              type="number" 
+                              className="form-input" 
+                              style={{ width: '80px', padding: '4px 8px', fontSize: '0.8rem' }}
+                              value={rpcTimeoutMs}
+                              onChange={e => setRpcTimeoutMs(Number(e.target.value))}
+                              min={500}
+                              max={60000}
+                              step={500}
+                            />
+                            <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>ms</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
 
-                    <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+                    {/* Presets */}
+                    <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '0.8rem', color: '#94a3b8', alignSelf: 'center', marginRight: '4px' }}>Presets:</span>
                       <button 
                         className="btn btn-secondary btn-sm" 
                         onClick={() => { setRpcMethod('setRelay'); setRpcParams('{"relay": 1, "state": true}'); }}
@@ -1846,13 +1968,19 @@ export default function App() {
                       </button>
                       <button 
                         className="btn btn-secondary btn-sm" 
-                        onClick={() => { setRpcMethod('setSamplingInterval'); setRpcParams('{"intervalSec": 10}'); }}
+                        onClick={() => { setRpcMethod('setTelemetryInterval'); setRpcParams('{"intervalSec": 10}'); }}
                       >
-                        setSamplingInterval
+                        setTelemetryInterval
+                      </button>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => { setRpcMethod('triggerDiagnosticScan'); setRpcParams('{"depth": "full", "sensors": ["temp", "humidity"]}'); }}
+                      >
+                        triggerDiagnosticScan
                       </button>
                     </div>
 
-                    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr auto auto', gap: '12px', alignItems: 'end' }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr auto', gap: '12px', alignItems: 'end' }}>
                       <div className="form-group" style={{ margin: 0 }}>
                         <label className="form-label">RPC Method</label>
                         <input 
@@ -1877,42 +2005,79 @@ export default function App() {
 
                       <button 
                         className="btn btn-primary" 
-                        style={{ height: '42px' }} 
-                        onClick={() => handleSendRpc(true)} 
+                        style={{ height: '42px', minWidth: '140px' }} 
+                        onClick={() => handleSendRpc(rpcTwoWay)} 
                         disabled={rpcSending}
                       >
                         {rpcSending ? <RefreshCw className="animate-spin" size={16} /> : <Send size={16} />}
-                        <span>Two-Way RPC</span>
-                      </button>
-
-                      <button 
-                        className="btn btn-secondary" 
-                        style={{ height: '42px' }} 
-                        onClick={() => handleSendRpc(false)} 
-                        disabled={rpcSending}
-                      >
-                        <span>One-Way</span>
+                        <span>{rpcTwoWay ? 'Execute (Sync)' : 'Send (Async)'}</span>
                       </button>
                     </div>
+
+                    {/* Live Response Panel */}
+                    {rpcLastResponse && (
+                      <div style={{ 
+                        marginTop: '16px', 
+                        padding: '12px 16px', 
+                        background: 'rgba(30, 41, 59, 0.6)', 
+                        border: '1px solid rgba(255, 255, 255, 0.08)', 
+                        borderRadius: '8px' 
+                      }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span style={{ fontSize: '0.8rem', fontWeight: 600, color: '#94a3b8' }}>Latest Response:</span>
+                            <span className="badge-tag" style={{
+                              background: rpcLastResponse.status === 'SUCCESSFUL' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(56, 189, 248, 0.2)',
+                              color: rpcLastResponse.status === 'SUCCESSFUL' ? '#34d399' : '#38bdf8'
+                            }}>
+                              {rpcLastResponse.status}
+                            </span>
+                            {rpcLastDurationMs !== null && (
+                              <span style={{ fontSize: '0.75rem', color: '#cbd5e1' }}>
+                                Latency: <strong>{rpcLastDurationMs} ms</strong>
+                              </span>
+                            )}
+                          </div>
+                          <span style={{ fontSize: '0.72rem', color: '#64748b' }}>
+                            Cmd ID: {rpcLastResponse.id?.slice(0, 8)}...
+                          </span>
+                        </div>
+                        <pre className="font-mono" style={{ margin: 0, fontSize: '0.8rem', color: '#38bdf8', overflowX: 'auto', maxHeight: '120px' }}>
+                          {JSON.stringify(rpcLastResponse.response || rpcLastResponse, null, 2)}
+                        </pre>
+                      </div>
+                    )}
                   </div>
 
                   {/* RPC History Table */}
                   <div className="table-container">
+                    <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                      <span style={{ fontWeight: 600, color: '#ffffff' }}>Command History & Delivery Logs</span>
+                      <button 
+                        className="btn btn-secondary btn-sm" 
+                        onClick={() => selectedDeviceId && loadDeviceData(selectedDeviceId)}
+                      >
+                        <RefreshCw size={13} />
+                        Refresh
+                      </button>
+                    </div>
                     <table className="table">
                       <thead>
                         <tr>
                           <th>Status</th>
                           <th>Method</th>
-                          <th>Type</th>
+                          <th>Mode</th>
                           <th>Parameters</th>
                           <th>Response</th>
+                          <th>Retries</th>
                           <th>Timestamp</th>
+                          <th style={{ textAlign: 'right' }}>Actions</th>
                         </tr>
                       </thead>
                       <tbody>
                         {rpcCommands.length === 0 ? (
                           <tr>
-                            <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
+                            <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--text-muted)' }}>
                               No RPC commands executed for this device yet.
                             </td>
                           </tr>
@@ -1933,14 +2098,39 @@ export default function App() {
                               <td style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
                                 {cmd.two_way ? 'Two-Way (Sync)' : 'One-Way (Async)'}
                               </td>
-                              <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
+                              <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {typeof cmd.params === 'object' ? JSON.stringify(cmd.params) : String(cmd.params)}
                               </td>
-                              <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)' }}>
+                              <td className="font-mono" style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                 {cmd.response ? (typeof cmd.response === 'object' ? JSON.stringify(cmd.response) : String(cmd.response)) : '--'}
+                              </td>
+                              <td style={{ fontSize: '0.8rem', color: '#94a3b8' }}>
+                                {cmd.retries || 0}/{cmd.max_retries || 3}
                               </td>
                               <td style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                                 {new Date(cmd.created_time).toLocaleTimeString()}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', gap: '6px' }}>
+                                  <button 
+                                    className="btn btn-secondary btn-sm" 
+                                    onClick={() => {
+                                      setRpcMethod(cmd.method);
+                                      setRpcParams(typeof cmd.params === 'object' ? JSON.stringify(cmd.params) : String(cmd.params));
+                                      handleSendRpc(cmd.two_way);
+                                    }}
+                                    title="Re-send command"
+                                  >
+                                    <RefreshCw size={12} />
+                                  </button>
+                                  <button 
+                                    className="btn btn-danger btn-sm" 
+                                    onClick={() => handleDeleteRpc(cmd.id)}
+                                    title="Delete command"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ))
@@ -2034,6 +2224,17 @@ export default function App() {
           {/* TAB 10: RULE ENGINE & DAG STUDIO */}
           {activeTab === 'rules' && (
             <RuleEngineView />
+          )}
+
+          {/* TAB 11: FIRMWARE & SOFTWARE OTA MANAGEMENT */}
+          {activeTab === 'ota' && (
+            <OtaView 
+              devices={devices} 
+              onSelectDevice={(id) => { 
+                setSelectedDeviceId(id); 
+                setActiveTab('device-detail'); 
+              }} 
+            />
           )}
         </div>
       </main>
@@ -2138,6 +2339,94 @@ export default function App() {
                 <button type="submit" className="btn btn-primary">
                   <Check size={16} />
                   <span>Create Canvas</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* BULK IMPORT DEVICES MODAL */}
+      {showBulkImportModal && (
+        <div className="modal-overlay" onClick={() => setShowBulkImportModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '580px' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">Bulk Import IoT Devices</h3>
+              <button 
+                onClick={() => setShowBulkImportModal(false)}
+                style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleBulkImportSubmit}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', padding: '16px 20px' }}>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button 
+                    type="button"
+                    className={`btn ${bulkImportFormat === 'csv' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                    onClick={() => {
+                      setBulkImportFormat('csv');
+                      setBulkImportText('name,label,access_token\nsensor-01,Warehouse Temp Sensor,TOKEN_WH_01\nsensor-02,Cold Storage Sensor,TOKEN_CS_02\nsensor-03,Rooftop Weather Node,TOKEN_RT_03');
+                    }}
+                  >
+                    CSV Format
+                  </button>
+                  <button 
+                    type="button"
+                    className={`btn ${bulkImportFormat === 'json' ? 'btn-primary' : 'btn-secondary'} btn-sm`}
+                    onClick={() => {
+                      setBulkImportFormat('json');
+                      setBulkImportText('[\n  {"name": "sensor-01", "label": "Warehouse Temp Sensor", "access_token": "TOKEN_WH_01"},\n  {"name": "sensor-02", "label": "Cold Storage Sensor", "access_token": "TOKEN_CS_02"}\n]');
+                    }}
+                  >
+                    JSON Format
+                  </button>
+                </div>
+
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">
+                    {bulkImportFormat === 'csv' ? 'CSV Content (Header: name,label,access_token)' : 'JSON Array of Devices'}
+                  </label>
+                  <textarea 
+                    className="form-input font-mono" 
+                    rows={8}
+                    style={{ fontSize: '0.82rem', resize: 'vertical' }}
+                    value={bulkImportText} 
+                    onChange={e => setBulkImportText(e.target.value)} 
+                    placeholder={bulkImportFormat === 'csv' ? 'name,label,access_token\nsensor-01,Storage A,TOKEN_01' : '[{"name":"sensor-01"}]'}
+                    required 
+                  />
+                </div>
+
+                {bulkImportResult && (
+                  <div style={{ 
+                    padding: '10px 14px', 
+                    borderRadius: '8px', 
+                    background: bulkImportResult.failed === 0 ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                    border: `1px solid ${bulkImportResult.failed === 0 ? '#10b981' : '#f59e0b'}`,
+                    fontSize: '0.82rem'
+                  }}>
+                    <strong style={{ color: bulkImportResult.failed === 0 ? '#34d399' : '#fbbf24' }}>
+                      Import Summary: {bulkImportResult.imported} imported, {bulkImportResult.failed} failed
+                    </strong>
+                    {bulkImportResult.errors && bulkImportResult.errors.length > 0 && (
+                      <ul style={{ margin: '6px 0 0 16px', padding: 0, color: '#f87171' }}>
+                        {bulkImportResult.errors.map((e: string, i: number) => <li key={i}>{e}</li>)}
+                      </ul>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowBulkImportModal(false)}>
+                  Close
+                </button>
+                <button type="submit" className="btn btn-primary" disabled={bulkImportLoading || !bulkImportText.trim()}>
+                  {bulkImportLoading ? <RefreshCw className="animate-spin" size={16} /> : <Upload size={16} />}
+                  <span>Import Devices</span>
                 </button>
               </div>
             </form>

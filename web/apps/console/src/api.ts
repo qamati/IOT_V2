@@ -329,6 +329,89 @@ class ApiClient {
     });
   }
 
+  async getPersistentRpc(commandId: string): Promise<RpcCommand> {
+    return this.request<RpcCommand>(`/rpc/persistent/${commandId}`);
+  }
+
+  async deletePersistentRpc(commandId: string): Promise<void> {
+    await this.request(`/rpc/persistent/${commandId}`, { method: 'DELETE' });
+  }
+
+  // --- Stage 7: Bulk Devices Import & Export ---
+  async bulkImportDevices(data: any): Promise<BulkImportResult> {
+    const isString = typeof data === 'string';
+    return this.request<BulkImportResult>('/devices/bulk/import', {
+      method: 'POST',
+      headers: isString ? { 'Content-Type': 'text/plain' } : { 'Content-Type': 'application/json' },
+      body: isString ? data : JSON.stringify(data),
+    });
+  }
+
+  async bulkExportDevicesCsv(): Promise<string> {
+    const res = await fetch(`${BASE_URL}/devices/bulk/export`, {
+      headers: {
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      },
+    });
+    if (!res.ok) throw new Error('Failed to export devices CSV');
+    return res.text();
+  }
+
+  // --- Stage 7: OTA Firmware & Software Management ---
+  async listOtaPackages(type?: string, page = 1, pageSize = 50): Promise<{ data: OtaPackage[]; total: number }> {
+    let q = `?page=${page}&pageSize=${pageSize}`;
+    if (type) q += `&type=${type}`;
+    return this.request<{ data: OtaPackage[]; total: number }>(`/otaPackages${q}`);
+  }
+
+  async createOtaPackage(pkg: { type: 'FIRMWARE' | 'SOFTWARE'; title: string; version: string; tag?: string; url?: string }): Promise<OtaPackage> {
+    return this.request<OtaPackage>('/otaPackages', {
+      method: 'POST',
+      body: JSON.stringify(pkg),
+    });
+  }
+
+  async getOtaPackage(id: string): Promise<OtaPackage> {
+    return this.request<OtaPackage>(`/otaPackages/${id}`);
+  }
+
+  async deleteOtaPackage(id: string): Promise<void> {
+    await this.request(`/otaPackages/${id}`, { method: 'DELETE' });
+  }
+
+  async uploadOtaBinary(packageId: string, file: File): Promise<OtaPackage> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await fetch(`${BASE_URL}/otaPackages/${packageId}/upload`, {
+      method: 'POST',
+      headers: {
+        ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}),
+      },
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ message: res.statusText }));
+      throw new Error(err.message || 'Binary upload failed');
+    }
+    return res.json();
+  }
+
+  async assignOtaPackage(deviceId: string, packageId: string, kind: 'FIRMWARE' | 'SOFTWARE'): Promise<OtaAssignment> {
+    return this.request<OtaAssignment>(`/devices/${deviceId}/ota/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ packageId, kind }),
+    });
+  }
+
+  async getDeviceOtaState(deviceId: string, kind = 'FIRMWARE'): Promise<DeviceOtaState> {
+    return this.request<DeviceOtaState>(`/devices/${deviceId}/ota/state?kind=${kind}`);
+  }
+
+  async listFleetOtaStates(packageId: string): Promise<DeviceOtaState[]> {
+    const res = await this.request<DeviceOtaState[]>(`/otaPackages/${packageId}/fleet`);
+    return Array.isArray(res) ? res : [];
+  }
+
   // --- Stage 8: Integrations & Converters ---
   async listConverters(): Promise<Converter[]> {
     const res = await this.request<Converter[]>('/converters');
@@ -597,10 +680,58 @@ export interface RpcCommand {
   method: string;
   params: any;
   two_way: boolean;
-  status: 'QUEUED' | 'DELIVERED' | 'SUCCESSFUL' | 'TIMEOUT' | 'FAILED';
+  status: 'QUEUED' | 'SENT' | 'DELIVERED' | 'SUCCESSFUL' | 'TIMEOUT' | 'EXPIRED' | 'FAILED';
+  retries?: number;
+  max_retries?: number;
   created_time: number;
+  delivered_time?: number;
+  expiration_time?: number;
   response_time?: number;
   response?: any;
+  error?: string;
+}
+
+export interface BulkImportResult {
+  imported: number;
+  failed: number;
+  errors: string[];
+  devices: Device[];
+}
+
+export interface OtaPackage {
+  id: string;
+  tenant_id: string;
+  type: 'FIRMWARE' | 'SOFTWARE';
+  title: string;
+  version: string;
+  tag?: string;
+  url?: string;
+  file_name?: string;
+  content_type?: string;
+  checksum_algorithm?: string;
+  checksum?: string;
+  data_size?: number;
+  created_time: number;
+}
+
+export interface OtaAssignment {
+  id: string;
+  tenant_id: string;
+  kind: 'FIRMWARE' | 'SOFTWARE';
+  package_id: string;
+  scope: 'DEVICE' | 'DEVICE_PROFILE';
+  target_id: string;
+  created_time: number;
+}
+
+export interface DeviceOtaState {
+  device_id: string;
+  kind: 'FIRMWARE' | 'SOFTWARE';
+  package_id?: string;
+  state: 'QUEUED' | 'DOWNLOADING' | 'DOWNLOADED' | 'VERIFIED' | 'UPDATING' | 'UPDATED' | 'FAILED';
+  progress: number;
+  error?: string;
+  updated_ts: number;
 }
 
 export interface Converter {
