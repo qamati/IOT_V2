@@ -1433,8 +1433,23 @@ export default function App() {
                               </span>
                             </td>
                             <td>
-                              <div style={{ fontWeight: 600, color: '#fff', cursor: 'pointer' }} onClick={() => { setSelectedDeviceId(dev.id); setActiveTab('device-detail'); }}>
-                                {dev.name}
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                <div style={{ fontWeight: 600, color: '#fff', cursor: 'pointer' }} onClick={() => { setSelectedDeviceId(dev.id); setActiveTab('device-detail'); }}>
+                                  {dev.name}
+                                </div>
+                                {dev.name.includes('OPC_UA') && (
+                                  <span style={{ 
+                                    background: 'rgba(6, 182, 212, 0.15)', 
+                                    color: 'var(--accent-cyan)', 
+                                    border: '1px solid rgba(6, 182, 212, 0.3)',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 700,
+                                    padding: '1px 6px',
+                                    borderRadius: '4px'
+                                  }}>
+                                    OPC UA TCP :4840
+                                  </span>
+                                )}
                               </div>
                               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                                 {dev.id}
