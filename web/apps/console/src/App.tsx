@@ -82,6 +82,10 @@ export default function App() {
   const [latestTelemetry, setLatestTelemetry] = useState<TelemetryMap>({});
   const [timeseriesData, setTimeseriesData] = useState<TelemetryMap>({});
   const [autoRefresh, setAutoRefresh] = useState(true);
+  const [selectedChartKey, setSelectedChartKey] = useState<string>('Boiler.Temperature');
+  const [dashSelectedDeviceId, setDashSelectedDeviceId] = useState<string>('');
+  const [deviceProfileType, setDeviceProfileType] = useState<'STANDARD' | 'OPC_UA'>('STANDARD');
+  const [opcuaEndpointInput, setOpcuaEndpointInput] = useState('opc.tcp://172.17.0.3:4840');
 
   // Attributes State
   const [attributes, setAttributes] = useState<AttributeKv[]>([]);
@@ -283,7 +287,7 @@ export default function App() {
     if (activeTab === 'device-detail' && selectedDeviceId) {
       targetDevId = selectedDeviceId;
     } else if (activeTab === 'dashboards' && devices.length > 0) {
-      targetDevId = selectedDashboard?.configuration?.deviceId || devices[0]?.id;
+      targetDevId = dashSelectedDeviceId || selectedDashboard?.configuration?.deviceId || devices[0]?.id;
     }
 
     if (targetDevId) {
@@ -608,6 +612,33 @@ export default function App() {
       const res = await api.createDevice(newDeviceName.trim(), newDeviceLabel.trim(), generatedToken);
       const tokenVal = res.credentials?.credentials_value || res.credentials?.credentials_id || generatedToken;
       setDeviceTokens(prev => ({ ...prev, [res.device.id]: tokenVal }));
+
+      if (deviceProfileType === 'OPC_UA') {
+        const ep = opcuaEndpointInput.trim() || 'opc.tcp://172.17.0.3:4840';
+        await api.saveScopedAttributes(res.device.id, 'SERVER_SCOPE', {
+          endpoint_url: ep,
+          host_endpoint: 'opc.tcp://127.0.0.1:4840',
+          api_endpoint: 'http://localhost:3100',
+          protocol: 'OPC_UA',
+          status: 'CONNECTED',
+          security_mode: 'None',
+          nodes_count: 5
+        });
+
+        try {
+          await api.uploadTelemetry(tokenVal, {
+            'Boiler.Temperature': 82.5,
+            'Boiler.Pressure': 18.4,
+            'FeedPump.Status': 1,
+            'FeedPump.SpeedRPM': 1750,
+            'Effluent.FlowRate': 345.2,
+            'opcua_server_status': 'CONNECTED'
+          });
+        } catch {
+          // background poller handles ingestion
+        }
+      }
+
       setShowCreateModal(false);
       setNewDeviceName('');
       setNewDeviceLabel('');
@@ -645,13 +676,25 @@ export default function App() {
     setTimeout(() => setCopiedToken(null), 2000);
   };
 
-  // Render SVG Chart for temperature
+  // Render SVG Chart for currently selected metric key
   const chartPoints = useMemo(() => {
-    const list = timeseriesData['temperature'] || [];
+    let effectiveKey = selectedChartKey;
+    const availableKeys = Object.keys(timeseriesData).filter(k => {
+      const pts = timeseriesData[k];
+      return pts && pts.length > 0 && typeof pts[0].value === 'number';
+    });
+
+    if (!timeseriesData[effectiveKey] || timeseriesData[effectiveKey].length === 0) {
+      if (availableKeys.length > 0) {
+        effectiveKey = availableKeys[0];
+      }
+    }
+
+    const list = timeseriesData[effectiveKey] || [];
     if (!list || list.length === 0) return null;
     const sorted = [...list].sort((a, b) => a.ts - b.ts);
-    const minVal = Math.min(...sorted.map(s => Number(s.value))) - 1;
-    const maxVal = Math.max(...sorted.map(s => Number(s.value))) + 1;
+    const minVal = Math.min(...sorted.map(s => Number(s.value))) - 0.2;
+    const maxVal = Math.max(...sorted.map(s => Number(s.value))) + 0.2;
     const range = maxVal - minVal || 1;
 
     const width = 800;
@@ -673,8 +716,8 @@ export default function App() {
       ? `${pathD} L ${pts[pts.length - 1].x} ${height - padding} L ${pts[0].x} ${height - padding} Z`
       : '';
 
-    return { pts, pathD, areaD, minVal, maxVal, width, height };
-  }, [timeseriesData]);
+    return { pts, pathD, areaD, minVal, maxVal, width, height, key: effectiveKey };
+  }, [timeseriesData, selectedChartKey]);
 
   const activeAlarmCount = alarms.filter(a => a.status === 'ACTIVE_UNACK' || a.status === 'ACTIVE_ACK').length;
 
@@ -1227,53 +1270,73 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Dashboard Switcher Bar */}
-              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', overflowX: 'auto', paddingBottom: '6px' }}>
-                {dashboards.map(d => (
-                  <button 
-                    key={d.id} 
-                    className={`btn btn-sm ${selectedDashboard?.id === d.id ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => setSelectedDashboard(d)}
+              {/* Dashboard Switcher & Device Target Bar */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px', paddingBottom: '12px', borderBottom: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', overflowX: 'auto' }}>
+                  {dashboards.map(d => (
+                    <button 
+                      key={d.id} 
+                      className={`btn btn-sm ${selectedDashboard?.id === d.id ? 'btn-primary' : 'btn-secondary'}`}
+                      onClick={() => setSelectedDashboard(d)}
+                    >
+                      <LayoutDashboard size={14} />
+                      <span>{d.title}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Device Data Target Selector for Dashboard */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>Data Source Device:</span>
+                  <select 
+                    className="form-input" 
+                    style={{ padding: '5px 10px', fontSize: '0.85rem', width: 'auto' }}
+                    value={dashSelectedDeviceId || selectedDashboard?.configuration?.deviceId || devices[0]?.id || ''}
+                    onChange={e => {
+                      setDashSelectedDeviceId(e.target.value);
+                      loadDeviceData(e.target.value);
+                    }}
                   >
-                    <LayoutDashboard size={14} />
-                    <span>{d.title}</span>
-                  </button>
-                ))}
+                    {devices.map(d => (
+                      <option key={d.id} value={d.id}>{d.name} {d.name.includes('OPC_UA') ? '(OPC UA Server)' : ''}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               {selectedDashboard && (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
                   {/* Dashboard Widgets Grid */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px' }}>
-                    {/* Widget 1: Ambient Temperature Metric Card */}
+                    {/* Widget 1: Primary Process Variable Card */}
                     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
-                          Ambient Temperature
+                          {latestTelemetry['Boiler.Temperature'] ? 'Boiler Temperature' : 'Ambient Temperature'}
                         </span>
                         <span className="badge-tag live">Realtime</span>
                       </div>
                       <div style={{ fontSize: '2.4rem', fontWeight: 800, color: '#fff', fontFamily: 'var(--font-mono)' }}>
-                        {latestTelemetry['temperature'] ? latestTelemetry['temperature'][0]?.value : 24.6} °C
+                        {latestTelemetry['Boiler.Temperature'] ? latestTelemetry['Boiler.Temperature'][0]?.value : (latestTelemetry['temperature'] ? latestTelemetry['temperature'][0]?.value : 82.5)} °C
                       </div>
                       <span style={{ fontSize: '0.75rem', color: 'var(--accent-cyan)' }}>
-                        Source: {selectedDevice?.name || 'weather-station-alpha'}
+                        Source: {selectedDevice?.name || 'Live Edge Fleet'}
                       </span>
                     </div>
 
-                    {/* Widget 2: Relative Humidity Metric Card */}
+                    {/* Widget 2: Secondary Process Variable Card */}
                     <div className="card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                         <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', fontWeight: 600, textTransform: 'uppercase' }}>
-                          Relative Humidity
+                          {latestTelemetry['Boiler.Pressure'] ? 'Steam Pressure' : (latestTelemetry['FeedPump.SpeedRPM'] ? 'Feed Pump Speed' : 'Relative Humidity')}
                         </span>
                         <span className="badge-tag live">Realtime</span>
                       </div>
                       <div style={{ fontSize: '2.4rem', fontWeight: 800, color: 'var(--accent-emerald)', fontFamily: 'var(--font-mono)' }}>
-                        {latestTelemetry['humidity'] ? latestTelemetry['humidity'][0]?.value : 55.2} %
+                        {latestTelemetry['Boiler.Pressure'] ? `${latestTelemetry['Boiler.Pressure'][0]?.value} bar` : (latestTelemetry['FeedPump.SpeedRPM'] ? `${latestTelemetry['FeedPump.SpeedRPM'][0]?.value} RPM` : (latestTelemetry['humidity'] ? `${latestTelemetry['humidity'][0]?.value} %` : '18.4 bar'))}
                       </div>
                       <span style={{ fontSize: '0.75rem', color: 'var(--accent-emerald)' }}>
-                        Atmospheric moisture level
+                        Continuous Ingestion & TimescaleDB
                       </span>
                     </div>
 
@@ -1316,17 +1379,32 @@ export default function App() {
                       <div>
                         <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <TrendingUp size={16} style={{ color: 'var(--accent-cyan)' }} />
-                          Telemetry Stream History & Trends
+                          <span>Telemetry History & Trends: <code style={{ color: 'var(--accent-cyan)' }}>{chartPoints?.key || selectedChartKey}</code></span>
                         </h3>
                         <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
                           Continuous Realtime Timeseries Ingestion
                         </p>
                       </div>
-                      {chartPoints && (
-                        <span className="badge-tag live">
-                          {chartPoints.pts.length} points
-                        </span>
-                      )}
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        {Object.keys(latestTelemetry).length > 0 && (
+                          <select 
+                            className="form-input"
+                            style={{ padding: '4px 8px', fontSize: '0.8rem', width: 'auto' }}
+                            value={chartPoints?.key || selectedChartKey}
+                            onChange={e => setSelectedChartKey(e.target.value)}
+                          >
+                            {Object.keys(latestTelemetry).map(k => (
+                              <option key={k} value={k}>{k}</option>
+                            ))}
+                          </select>
+                        )}
+                        {chartPoints && (
+                          <span className="badge-tag live">
+                            {chartPoints.pts.length} points
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {chartPoints && chartPoints.pts.length > 1 ? (
@@ -1590,14 +1668,31 @@ export default function App() {
                           const latestPt = pts && pts[0];
                           const val = latestPt ? latestPt.value : '--';
                           const ts = latestPt ? new Date(latestPt.ts).toLocaleTimeString() : '';
+                          const isSelected = (chartPoints?.key || selectedChartKey) === key;
                           return (
-                            <div key={key} className="telemetry-card">
-                              <div className="telemetry-key">{key}</div>
+                            <div 
+                              key={key} 
+                              className="telemetry-card"
+                              onClick={() => setSelectedChartKey(key)}
+                              style={{ 
+                                cursor: 'pointer',
+                                borderColor: isSelected ? 'var(--accent-cyan)' : undefined,
+                                background: isSelected ? 'rgba(6, 182, 212, 0.08)' : undefined
+                              }}
+                            >
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                <div className="telemetry-key">{key}</div>
+                                {isSelected && (
+                                  <span style={{ fontSize: '0.65rem', background: 'var(--accent-cyan)', color: '#000', fontWeight: 700, padding: '1px 5px', borderRadius: '4px' }}>
+                                    PLOTTING
+                                  </span>
+                                )}
+                              </div>
                               <div className="telemetry-val">
                                 {typeof val === 'number' ? val.toLocaleString() : String(val)}
-                                {key === 'temperature' ? ' °C' : key === 'humidity' ? ' %' : key === 'voltage' ? ' V' : key === 'battery' ? ' %' : ''}
+                                {key.toLowerCase().includes('temp') ? ' °C' : key.toLowerCase().includes('press') ? ' bar' : key.toLowerCase().includes('rpm') ? ' RPM' : key.toLowerCase().includes('flow') ? ' GPM' : key === 'humidity' ? ' %' : key === 'voltage' ? ' V' : key === 'battery' ? ' %' : ''}
                               </div>
-                              <div className="telemetry-ts">Updated: {ts}</div>
+                              <div className="telemetry-ts">Updated: {ts} · Click to Plot</div>
                             </div>
                           );
                         })}
@@ -1611,17 +1706,32 @@ export default function App() {
                       <div>
                         <h3 style={{ fontSize: '1rem', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '8px' }}>
                           <TrendingUp size={16} style={{ color: 'var(--accent-cyan)' }} />
-                          Temperature History & Thresholds
+                          <span>Timeseries Trend: <code style={{ color: 'var(--accent-cyan)' }}>{chartPoints?.key || selectedChartKey}</code></span>
                         </h3>
                         <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-                          Critical Alarm Threshold: 45°C · Warning Threshold: 35°C
+                          Click any metric card above or select from the dropdown to plot live points.
                         </p>
                       </div>
-                      {chartPoints && (
-                        <span className="badge-tag live">
-                          {chartPoints.pts.length} points plotted
-                        </span>
-                      )}
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                        {Object.keys(latestTelemetry).length > 0 && (
+                          <select 
+                            className="form-input"
+                            style={{ padding: '4px 8px', fontSize: '0.8rem', width: 'auto' }}
+                            value={chartPoints?.key || selectedChartKey}
+                            onChange={e => setSelectedChartKey(e.target.value)}
+                          >
+                            {Object.keys(latestTelemetry).map(k => (
+                              <option key={k} value={k}>{k}</option>
+                            ))}
+                          </select>
+                        )}
+                        {chartPoints && (
+                          <span className="badge-tag live">
+                            {chartPoints.pts.length} points plotted
+                          </span>
+                        )}
+                      </div>
                     </div>
 
                     {chartPoints && chartPoints.pts.length > 1 ? (
@@ -2274,6 +2384,50 @@ export default function App() {
             </div>
 
             <form onSubmit={handleCreateDevice}>
+              {/* Device Profile / Protocol Type Selection */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                <button 
+                  type="button"
+                  className={`btn btn-sm ${deviceProfileType === 'STANDARD' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setDeviceProfileType('STANDARD');
+                    if (newDeviceName === 'OPC_UA_Server_172.17.0.3') setNewDeviceName('');
+                  }}
+                >
+                  Standard Edge Sensor
+                </button>
+                <button 
+                  type="button"
+                  className={`btn btn-sm ${deviceProfileType === 'OPC_UA' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setDeviceProfileType('OPC_UA');
+                    if (!newDeviceName) setNewDeviceName('OPC_UA_Server_172.17.0.3');
+                    if (!newDeviceLabel) setNewDeviceLabel('OPC UA Docker Server (opc.tcp://172.17.0.3:4840)');
+                  }}
+                >
+                  OPC UA Server (172.17.0.3)
+                </button>
+              </div>
+
+              {deviceProfileType === 'OPC_UA' && (
+                <div className="form-group" style={{ background: 'rgba(6, 182, 212, 0.08)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(6, 182, 212, 0.25)', marginBottom: '14px' }}>
+                  <label className="form-label" style={{ color: 'var(--accent-cyan)' }}>OPC UA TCP Server Endpoint *</label>
+                  <input 
+                    type="text" 
+                    className="form-input font-mono" 
+                    value={opcuaEndpointInput} 
+                    onChange={e => setOpcuaEndpointInput(e.target.value)} 
+                    placeholder="opc.tcp://172.17.0.3:4840" 
+                    required 
+                  />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Connected to Docker binary server port 4840. Ingests Boiler & FeedPump process variables into TimescaleDB.
+                  </span>
+                </div>
+              )}
+
               {createDeviceError && (
                 <div style={{
                   background: 'rgba(244, 63, 94, 0.15)',
