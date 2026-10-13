@@ -299,15 +299,22 @@ func (a *API) setupRoutes() {
 			protected.Post("/edge/{id}/commands", a.handleExecuteEdgeCommand)
 			protected.Get("/edge/{id}/journal", a.handleGetEdgeJournal)
 
-			// Stage 10: SCADA Tags, Process Alarms & SBO Control
+			// Stage 10: SCADA Tags, Process Alarms, SBO Control & ThingsBoard SVG Symbols
 			protected.Get("/scada/tags", a.handleListScadaTags)
 			protected.Post("/scada/tags", a.handleRegisterScadaTag)
 			protected.Post("/scada/tags/update", a.handleUpdateScadaTag)
 			protected.Get("/scada/alarms", a.handleListScadaAlarms)
+			protected.Get("/scada/alarms/kpis", a.handleGetScadaAlarmKPIs)
 			protected.Post("/scada/alarms/{id}/ack", a.handleAckScadaAlarm)
 			protected.Post("/scada/alarms/{id}/shelve", a.handleShelveScadaAlarm)
+			protected.Post("/scada/alarms/{id}/unshelve", a.handleUnshelveScadaAlarm)
 			protected.Post("/scada/control/select", a.handleSelectScadaControl)
 			protected.Post("/scada/control/operate", a.handleOperateScadaControl)
+			protected.Get("/scada/control/log", a.handleListScadaControlLogs)
+			protected.Get("/scada/symbols", a.handleListScadaSymbols)
+			protected.Get("/scada/symbols/{id}", a.handleGetScadaSymbol)
+			protected.Post("/scada/symbols", a.handleSaveScadaSymbol)
+			protected.Delete("/scada/symbols/{id}", a.handleDeleteScadaSymbol)
 
 			// Stage 4: Rule Chains & DAG Node Catalog
 			protected.Get("/ruleChains", a.handleListRuleChains)

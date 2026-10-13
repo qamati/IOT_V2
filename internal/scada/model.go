@@ -80,3 +80,75 @@ type ControlCommand struct {
 	Status       string  `json:"status"` // SELECTED | OPERATED | CANCELLED | INTERLOCK_DENIED
 	Reason       string  `json:"reason,omitempty"`
 }
+
+// ControlLogEntry represents an audited historical Select-Before-Operate control action.
+type ControlLogEntry struct {
+	ID           ids.ID  `json:"id"`
+	TenantID     ids.ID  `json:"tenant_id"`
+	TagPath      string  `json:"tag_path"`
+	DesiredValue any     `json:"desired_value"`
+	Operator     string  `json:"operator"`
+	Status       string  `json:"status"` // SELECTED | OPERATED | CANCELLED | TIMED_OUT | INTERLOCK_DENIED
+	Reason       string  `json:"reason,omitempty"`
+	SelectedAt   int64   `json:"selected_at"`
+	OperatedAt   *int64  `json:"operated_at,omitempty"`
+}
+
+// AlarmKPIs aggregates EEMUA 191 / ISA-18.2 alarm management performance metrics.
+type AlarmKPIs struct {
+	TotalAlarms      int     `json:"total_alarms"`
+	UnackAlarms      int     `json:"unack_alarms"`
+	AckedAlarms      int     `json:"acked_alarms"`
+	ShelvedAlarms    int     `json:"shelved_alarms"`
+	RtnUnackAlarms   int     `json:"rtn_unack_alarms"`
+	NormalAlarms     int     `json:"normal_alarms"`
+	MTTASeconds      float64 `json:"mtta_seconds"`     // Mean Time to Acknowledge
+	AlarmRate10Min   float64 `json:"alarm_rate_10min"` // Alarms in trailing 10 min window
+	InFlood          bool    `json:"in_flood"`         // Rate > 10 / 10 min
+}
+
+// ThingsBoard-Compatible SVG Symbol Models
+
+type SymbolTag struct {
+	Name      string `json:"name"`
+	Role      string `json:"role"` // shape | text | status | icon
+	ElementID string `json:"elementId"`
+}
+
+type SymbolProperty struct {
+	ID      string `json:"id"`
+	Type    string `json:"type"` // color | string | number | boolean
+	Default any    `json:"default"`
+	Label   string `json:"label"`
+}
+
+type SymbolBehavior struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"` // value | action | widgetAction
+	ValueType string `json:"valueType,omitempty"` // BOOL | DOUBLE | STRING | INT
+	Label     string `json:"label"`
+	Control   any    `json:"control,omitempty"`
+}
+
+type SymbolAnimation struct {
+	Target string         `json:"target"`
+	When   string         `json:"when"`
+	Set    map[string]any `json:"set,omitempty"`
+	Rotate map[string]any `json:"rotate,omitempty"`
+}
+
+// Symbol represents a ThingsBoard-compatible reusable industrial SVG symbol.
+type Symbol struct {
+	ID         ids.ID            `json:"id"`
+	TenantID   *ids.ID           `json:"tenant_id,omitempty"`
+	Name       string            `json:"name"`
+	Category   string            `json:"category"` // Pumps | Valves | Tanks | Pipes | Meters | Motors
+	Style      string            `json:"style"`    // standard | isa-101
+	SVGContent string            `json:"svg_content"`
+	Tags       []SymbolTag       `json:"tags"`
+	Properties []SymbolProperty  `json:"properties"`
+	Behaviors  []SymbolBehavior  `json:"behaviors"`
+	Animations []SymbolAnimation `json:"animations"`
+	Version    int               `json:"version"`
+	CreatedAt  int64             `json:"created_at"`
+}

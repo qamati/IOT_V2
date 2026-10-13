@@ -274,7 +274,51 @@ func main() {
 		Value:      100.0,
 		Quality:    scada.QualityGood,
 	})
-	logger.Info("demo SCADA tags registered for water treatment synoptic HMI")
+	_ = scadaSvc.RegisterTag(ctx, &scada.Tag{
+		TenantID:   demoTenantID,
+		Path:       "WaterTreatment.Chemical.AcidLevel",
+		DataType:   scada.DataTypeAnalog,
+		EngUnit:    "%",
+		Deadband:   0.5,
+		EUMin:      0.0,
+		EUMax:      100.0,
+		ScanRateMs: 1000,
+		Value:      48.6,
+		Quality:    scada.QualityGood,
+	})
+	_ = scadaSvc.RegisterTag(ctx, &scada.Tag{
+		TenantID:   demoTenantID,
+		Path:       "WaterTreatment.Chemical.DosingSpeed",
+		DataType:   scada.DataTypeAnalog,
+		EngUnit:    "RPM",
+		Deadband:   5.0,
+		EUMin:      0.0,
+		EUMax:      1800.0,
+		ScanRateMs: 1000,
+		Value:      1150.0,
+		Quality:    scada.QualityGood,
+	})
+	_ = scadaSvc.RegisterTag(ctx, &scada.Tag{
+		TenantID:   demoTenantID,
+		Path:       "WaterTreatment.Discharge.pH",
+		DataType:   scada.DataTypeAnalog,
+		EngUnit:    "pH",
+		Deadband:   0.1,
+		EUMin:      0.0,
+		EUMax:      14.0,
+		ScanRateMs: 1000,
+		Value:      7.2,
+		Quality:    scada.QualityGood,
+	})
+
+	// Seed ThingsBoard SVG symbols for demo tenant
+	for _, sym := range scada.DefaultSymbols() {
+		symCopy := *sym
+		symCopy.TenantID = &demoTenantID
+		_ = scadaSvc.SaveSymbol(ctx, &symCopy)
+	}
+
+	logger.Info("demo SCADA tags and ThingsBoard SVG symbols registered for water treatment synoptic HMI")
 
 	// Seed sample device
 	sampleDev, _, _ := devMgr.CreateDevice(ctx, demoTenantID, "weather-station-alpha", "Building A Rooftop Sensor", "DEV_ALPHA_TOKEN_123")

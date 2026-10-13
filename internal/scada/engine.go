@@ -23,28 +23,43 @@ type Service interface {
 	ListAlarms(ctx context.Context, tenantID ids.ID) ([]*ISA182Alarm, error)
 	AcknowledgeAlarm(ctx context.Context, tenantID, alarmID ids.ID, user string) (*ISA182Alarm, error)
 	ShelveAlarm(ctx context.Context, tenantID, alarmID ids.ID, durationMs int64) (*ISA182Alarm, error)
+	UnshelveAlarm(ctx context.Context, tenantID, alarmID ids.ID) (*ISA182Alarm, error)
+	GetAlarmKPIs(ctx context.Context, tenantID ids.ID) (*AlarmKPIs, error)
 
 	SelectControl(ctx context.Context, tenantID ids.ID, path string, desiredValue any, operator string) (*ControlCommand, error)
 	OperateControl(ctx context.Context, tenantID ids.ID, selectID ids.ID) (*ControlCommand, error)
+	ListControlLogs(ctx context.Context, tenantID ids.ID, limit int) ([]*ControlLogEntry, error)
+
+	ListSymbols(ctx context.Context, tenantID ids.ID, category string) ([]*Symbol, error)
+	GetSymbol(ctx context.Context, tenantID ids.ID, symbolID ids.ID) (*Symbol, error)
+	SaveSymbol(ctx context.Context, symbol *Symbol) error
+	DeleteSymbol(ctx context.Context, tenantID ids.ID, symbolID ids.ID) error
 }
 
 type memoryService struct {
-	mu       sync.RWMutex
-	tags     map[ids.ID]*Tag
-	byPath   map[string]ids.ID // tenantID:path -> tagID
-	alarms   map[ids.ID]*ISA182Alarm
-	controls map[ids.ID]*ControlCommand
+	mu          sync.RWMutex
+	tags        map[ids.ID]*Tag
+	byPath      map[string]ids.ID // tenantID:path -> tagID
+	alarms      map[ids.ID]*ISA182Alarm
+	controls    map[ids.ID]*ControlCommand
+	controlLogs []*ControlLogEntry
+	symbols     map[ids.ID]*Symbol
 }
 
 func NewMemoryService() Service {
 	s := &memoryService{
-		tags:     make(map[ids.ID]*Tag),
-		byPath:   make(map[string]ids.ID),
-		alarms:   make(map[ids.ID]*ISA182Alarm),
-		controls: make(map[ids.ID]*ControlCommand),
+		tags:        make(map[ids.ID]*Tag),
+		byPath:      make(map[string]ids.ID),
+		alarms:      make(map[ids.ID]*ISA182Alarm),
+		controls:    make(map[ids.ID]*ControlCommand),
+		controlLogs: make([]*ControlLogEntry, 0),
+		symbols:     make(map[ids.ID]*Symbol),
 	}
 
 	s.seedDefaultTags()
+	for _, sym := range DefaultSymbols() {
+		s.symbols[sym.ID] = sym
+	}
 	return s
 }
 
@@ -319,6 +334,67 @@ func (s *memoryService) ShelveAlarm(ctx context.Context, tenantID, alarmID ids.I
 	return a, nil
 }
 
+func (s *memoryService) UnshelveAlarm(ctx context.Context, tenantID, alarmID ids.ID) (*ISA182Alarm, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	a, ok := s.alarms[alarmID]
+	if !ok || (a.TenantID != ids.Nil && a.TenantID != tenantID) {
+		return nil, errs.NotFound("alarm not found")
+	}
+
+	if a.State == AlarmStateShelved {
+		a.State = AlarmStateUnackAlarm
+		a.ShelveUntil = 0
+	}
+	return a, nil
+}
+
+func (s *memoryService) GetAlarmKPIs(ctx context.Context, tenantID ids.ID) (*AlarmKPIs, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	kpis := &AlarmKPIs{}
+	now := time.Now().UnixMilli()
+	tenMinAgo := now - 600000
+	var totalAckTimeMs int64
+	var ackCount int64
+
+	for _, a := range s.alarms {
+		if a.TenantID != ids.Nil && a.TenantID != tenantID {
+			continue
+		}
+		kpis.TotalAlarms++
+		switch a.State {
+		case AlarmStateUnackAlarm:
+			kpis.UnackAlarms++
+		case AlarmStateAckedAlarm:
+			kpis.AckedAlarms++
+		case AlarmStateShelved:
+			kpis.ShelvedAlarms++
+		case AlarmStateRtnUnack:
+			kpis.RtnUnackAlarms++
+		case AlarmStateNormal:
+			kpis.NormalAlarms++
+		}
+
+		if a.ActiveTs >= tenMinAgo {
+			kpis.AlarmRate10Min++
+		}
+		if a.AckTs > a.ActiveTs {
+			totalAckTimeMs += (a.AckTs - a.ActiveTs)
+			ackCount++
+		}
+	}
+
+	if ackCount > 0 {
+		kpis.MTTASeconds = float64(totalAckTimeMs) / float64(ackCount) / 1000.0
+	}
+	kpis.InFlood = kpis.AlarmRate10Min > 10.0
+
+	return kpis, nil
+}
+
 func (s *memoryService) SelectControl(ctx context.Context, tenantID ids.ID, path string, desiredValue any, operator string) (*ControlCommand, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -334,6 +410,15 @@ func (s *memoryService) SelectControl(ctx context.Context, tenantID ids.ID, path
 	}
 
 	s.controls[cmd.SelectID] = cmd
+	s.controlLogs = append(s.controlLogs, &ControlLogEntry{
+		ID:           cmd.SelectID,
+		TenantID:     tenantID,
+		TagPath:      path,
+		DesiredValue: desiredValue,
+		Operator:     operator,
+		Status:       "SELECTED",
+		SelectedAt:   cmd.SelectedAt,
+	})
 	return cmd, nil
 }
 
@@ -372,9 +457,93 @@ func (s *memoryService) OperateControl(ctx context.Context, tenantID ids.ID, sel
 		tag.Version++
 	}
 
+	now := time.Now().UnixMilli()
 	cmd.Status = "OPERATED"
-	cmd.OperatedAt = time.Now().UnixMilli()
+	cmd.OperatedAt = now
+
+	// Update control log
+	for _, l := range s.controlLogs {
+		if l.ID == selectID {
+			l.Status = "OPERATED"
+			l.OperatedAt = &now
+			break
+		}
+	}
+
 	return cmd, nil
+}
+
+func (s *memoryService) ListControlLogs(ctx context.Context, tenantID ids.ID, limit int) ([]*ControlLogEntry, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+
+	result := make([]*ControlLogEntry, 0)
+	for i := len(s.controlLogs) - 1; i >= 0 && len(result) < limit; i-- {
+		log := s.controlLogs[i]
+		if log.TenantID == ids.Nil || log.TenantID == tenantID {
+			result = append(result, log)
+		}
+	}
+	return result, nil
+}
+
+func (s *memoryService) ListSymbols(ctx context.Context, tenantID ids.ID, category string) ([]*Symbol, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	result := make([]*Symbol, 0)
+	for _, sym := range s.symbols {
+		if sym.TenantID != nil && *sym.TenantID != ids.Nil && *sym.TenantID != tenantID {
+			continue
+		}
+		if category != "" && sym.Category != category {
+			continue
+		}
+		result = append(result, sym)
+	}
+	return result, nil
+}
+
+func (s *memoryService) GetSymbol(ctx context.Context, tenantID ids.ID, symbolID ids.ID) (*Symbol, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	sym, ok := s.symbols[symbolID]
+	if !ok || (sym.TenantID != nil && *sym.TenantID != ids.Nil && *sym.TenantID != tenantID) {
+		return nil, errs.NotFound("symbol not found")
+	}
+	return sym, nil
+}
+
+func (s *memoryService) SaveSymbol(ctx context.Context, symbol *Symbol) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if symbol.ID == ids.Nil {
+		symbol.ID = ids.MustNew()
+	}
+	if symbol.CreatedAt == 0 {
+		symbol.CreatedAt = time.Now().UnixMilli()
+	}
+	symbol.Version++
+	s.symbols[symbol.ID] = symbol
+	return nil
+}
+
+func (s *memoryService) DeleteSymbol(ctx context.Context, tenantID ids.ID, symbolID ids.ID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	sym, ok := s.symbols[symbolID]
+	if !ok || (sym.TenantID != nil && *sym.TenantID != ids.Nil && *sym.TenantID != tenantID) {
+		return errs.NotFound("symbol not found")
+	}
+	delete(s.symbols, symbolID)
+	return nil
 }
 
 func toFloat64(val any) (float64, bool) {

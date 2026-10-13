@@ -557,6 +557,14 @@ class ApiClient {
     });
   }
 
+  async unshelveScadaAlarm(id: string): Promise<ISA182Alarm> {
+    return this.request<ISA182Alarm>(`/scada/alarms/${id}/unshelve`, { method: 'POST' });
+  }
+
+  async getScadaAlarmKPIs(): Promise<AlarmKPIs> {
+    return this.request<AlarmKPIs>('/scada/alarms/kpis');
+  }
+
   async selectScadaControl(tagPath: string, desiredValue: any): Promise<ControlCommand> {
     return this.request<ControlCommand>('/scada/control/select', {
       method: 'POST',
@@ -569,6 +577,32 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify({ select_id: selectId }),
     });
+  }
+
+  async listScadaControlLogs(limit = 50): Promise<ControlLogEntry[]> {
+    const res = await this.request<ControlLogEntry[]>(`/scada/control/log?limit=${limit}`);
+    return Array.isArray(res) ? res : [];
+  }
+
+  async listScadaSymbols(category = ''): Promise<ScadaSymbol[]> {
+    const query = category ? `?category=${encodeURIComponent(category)}` : '';
+    const res = await this.request<ScadaSymbol[]>(`/scada/symbols${query}`);
+    return Array.isArray(res) ? res : [];
+  }
+
+  async getScadaSymbol(id: string): Promise<ScadaSymbol> {
+    return this.request<ScadaSymbol>(`/scada/symbols/${id}`);
+  }
+
+  async saveScadaSymbol(symbol: Partial<ScadaSymbol>): Promise<ScadaSymbol> {
+    return this.request<ScadaSymbol>('/scada/symbols', {
+      method: 'POST',
+      body: JSON.stringify(symbol),
+    });
+  }
+
+  async deleteScadaSymbol(id: string): Promise<{ deleted: boolean }> {
+    return this.request<{ deleted: boolean }>(`/scada/symbols/${id}`, { method: 'DELETE' });
   }
 
   // --- Stage 4: Rule Engine & DAG Studio ---
@@ -885,6 +919,7 @@ export interface ScadaTag {
   last_value?: any;
   quality: string;
   timestamp: number;
+  scan_rate_ms?: number;
 }
 
 export interface ISA182Alarm {
@@ -912,6 +947,73 @@ export interface ControlCommand {
   operated_at?: number;
   status: 'SELECTED' | 'OPERATED' | 'CANCELLED' | 'INTERLOCK_DENIED';
   reason?: string;
+}
+
+export interface ControlLogEntry {
+  id: string;
+  tenant_id: string;
+  tag_path: string;
+  desired_value: any;
+  operator: string;
+  status: 'SELECTED' | 'OPERATED' | 'CANCELLED' | 'TIMED_OUT' | 'INTERLOCK_DENIED';
+  reason?: string;
+  selected_at: number;
+  operated_at?: number;
+}
+
+export interface AlarmKPIs {
+  total_alarms: number;
+  unack_alarms: number;
+  acked_alarms: number;
+  shelved_alarms: number;
+  rtn_unack_alarms: number;
+  normal_alarms: number;
+  mtta_seconds: number;
+  alarm_rate_10min: number;
+  in_flood: boolean;
+}
+
+export interface SymbolTag {
+  name: string;
+  role: string;
+  elementId: string;
+}
+
+export interface SymbolProperty {
+  id: string;
+  type: string;
+  default: any;
+  label: string;
+}
+
+export interface SymbolBehavior {
+  id: string;
+  kind: 'value' | 'action' | 'widgetAction';
+  valueType?: string;
+  label: string;
+  control?: any;
+}
+
+export interface SymbolAnimation {
+  target: string;
+  when: string;
+  set?: Record<string, any>;
+  rotate?: Record<string, any>;
+}
+
+export interface ScadaSymbol {
+  id: string;
+  tenant_id?: string;
+  name: string;
+  category: string;
+  style: 'standard' | 'isa-101';
+  svg_content: string;
+  tags: SymbolTag[];
+  properties: SymbolProperty[];
+  behaviors: SymbolBehavior[];
+  animations: SymbolAnimation[];
+  version: number;
+  created_at?: number;
 }
 
 export interface RuleChain {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -789,4 +790,168 @@ func (a *API) handleOperateScadaControl(w http.ResponseWriter, r *http.Request) 
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(cmd)
+}
+
+func (a *API) handleGetScadaAlarmKPIs(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	kpis, err := a.scadaSvc.GetAlarmKPIs(r.Context(), tenantID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(kpis)
+}
+
+func (a *API) handleUnshelveScadaAlarm(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	alarmID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid alarm id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	alarm, err := a.scadaSvc.UnshelveAlarm(r.Context(), tenantID, alarmID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(alarm)
+}
+
+func (a *API) handleListScadaControlLogs(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if val, err := strconv.Atoi(l); err == nil && val > 0 {
+			limit = val
+		}
+	}
+
+	logs, err := a.scadaSvc.ListControlLogs(r.Context(), tenantID, limit)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	if logs == nil {
+		logs = make([]*scada.ControlLogEntry, 0)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(logs)
+}
+
+func (a *API) handleListScadaSymbols(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	category := r.URL.Query().Get("category")
+	symbols, err := a.scadaSvc.ListSymbols(r.Context(), tenantID, category)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	if symbols == nil {
+		symbols = make([]*scada.Symbol, 0)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(symbols)
+}
+
+func (a *API) handleGetScadaSymbol(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	symbolID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid symbol id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	sym, err := a.scadaSvc.GetSymbol(r.Context(), tenantID, symbolID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(sym)
+}
+
+func (a *API) handleSaveScadaSymbol(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	var sym scada.Symbol
+	if err := json.NewDecoder(r.Body).Decode(&sym); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("malformed JSON body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	sym.TenantID = &tenantID
+	if err := a.scadaSvc.SaveSymbol(r.Context(), &sym); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(sym)
+}
+
+func (a *API) handleDeleteScadaSymbol(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	symbolID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid symbol id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.scadaSvc.DeleteSymbol(r.Context(), tenantID, symbolID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 }
