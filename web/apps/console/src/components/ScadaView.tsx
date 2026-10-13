@@ -17,7 +17,13 @@ import {
   X,
   Radio,
   FileCode,
-  Flame
+  Flame,
+  Eye,
+  Wrench,
+  Sparkles,
+  Save,
+  Trash2,
+  Layers
 } from 'lucide-react';
 import { api } from '../api';
 import type { 
@@ -30,10 +36,83 @@ import type {
 } from '../api';
 import './ScadaView.css';
 
+export interface CanvasEquipment {
+  id: string;
+  name: string;
+  type: 'tank' | 'pump' | 'valve' | 'meter' | 'chemical';
+  tagPath: string;
+  unit: string;
+  minValue: number;
+  maxValue: number;
+  currentValue: number;
+}
+
+const TEMPLATES: Record<string, { label: string; icon: string; desc: string; items: CanvasEquipment[] }> = {
+  water_treatment: {
+    label: '💧 Water Treatment & Dosing',
+    icon: '💧',
+    desc: 'Dual-tank water buffer with centrifugal pump, modulating control valve, and inline dosing skid',
+    items: [
+      { id: 'Tank101', name: 'Raw Water Storage TK-101', type: 'tank', tagPath: 'WaterTreatment.Tank101.Level', unit: '%', minValue: 0, maxValue: 100, currentValue: 76.4 },
+      { id: 'Pump101', name: 'Duty Centrifugal Pump 101', type: 'pump', tagPath: 'WaterTreatment.Pump101.Status', unit: 'ON/OFF', minValue: 0, maxValue: 1, currentValue: 1 },
+      { id: 'FT101', name: 'Electromagnetic Flowmeter FT-101', type: 'meter', tagPath: 'WaterTreatment.Pump101.Flow', unit: 'GPM', minValue: 0, maxValue: 500, currentValue: 342.8 },
+      { id: 'Valve101', name: 'Modulating Control Valve FCV-101', type: 'valve', tagPath: 'WaterTreatment.Valve101.Position', unit: '%', minValue: 0, maxValue: 100, currentValue: 100 },
+      { id: 'ChemSkid', name: 'Acid Dosing Vessel TK-202', type: 'chemical', tagPath: 'WaterTreatment.Chemical.AcidLevel', unit: '%', minValue: 0, maxValue: 100, currentValue: 48.6 },
+      { id: 'PT101', name: 'Discharge Pressure Transmitter PT-101', type: 'meter', tagPath: 'WaterTreatment.Discharge.Pressure', unit: 'PSI', minValue: 0, maxValue: 150, currentValue: 62.5 },
+      { id: 'AT101', name: 'Effluent pH Analytical Sensor AT-101', type: 'meter', tagPath: 'WaterTreatment.Discharge.pH', unit: 'pH', minValue: 0, maxValue: 14, currentValue: 7.2 }
+    ]
+  },
+  steam_boiler: {
+    label: '🔥 Steam Boiler Station',
+    icon: '🔥',
+    desc: 'High-pressure steam boiler with feed pump, superheater steam valve, and pressure/temp transmitters',
+    items: [
+      { id: 'BoilerDrum', name: 'Boiler Steam Drum B-201', type: 'tank', tagPath: 'SteamPlant.Boiler201.DrumLevel', unit: '%', minValue: 0, maxValue: 100, currentValue: 68.5 },
+      { id: 'FeedPump', name: 'High-Pressure Feedwater Pump P-201', type: 'pump', tagPath: 'SteamPlant.FeedPump.Status', unit: 'ON/OFF', minValue: 0, maxValue: 1, currentValue: 1 },
+      { id: 'SteamValve', name: 'Main Steam Throttle MSV-201', type: 'valve', tagPath: 'SteamPlant.MainSteamValve.Position', unit: '%', minValue: 0, maxValue: 100, currentValue: 80 },
+      { id: 'SteamPressure', name: 'Steam Header Pressure PT-201', type: 'meter', tagPath: 'SteamPlant.Header.Pressure', unit: 'bar', minValue: 0, maxValue: 40, currentValue: 18.4 },
+      { id: 'SteamTemp', name: 'Superheater Temperature TT-201', type: 'meter', tagPath: 'SteamPlant.Header.Temp', unit: '°C', minValue: 0, maxValue: 500, currentValue: 285.0 }
+    ]
+  },
+  chemical_reactor: {
+    label: '🧪 Chemical Reactor Skid',
+    icon: '🧪',
+    desc: 'Continuous batch reactor vessel with agitator pump, reactant dosing, and pH/temperature control',
+    items: [
+      { id: 'ReactorVessel', name: 'Continuous Reactor Vessel RX-301', type: 'tank', tagPath: 'ChemicalSkid.Reactor301.Level', unit: '%', minValue: 0, maxValue: 100, currentValue: 54.2 },
+      { id: 'AgitatorPump', name: 'Reactor Recirculation Pump P-301', type: 'pump', tagPath: 'ChemicalSkid.RecircPump.Status', unit: 'ON/OFF', minValue: 0, maxValue: 1, currentValue: 1 },
+      { id: 'ReagentValve', name: 'Reagent Feed Control Valve FV-301', type: 'valve', tagPath: 'ChemicalSkid.FeedValve.Position', unit: '%', minValue: 0, maxValue: 100, currentValue: 45 },
+      { id: 'ReagentTank', name: 'Catalyst Reagent Dosing TK-305', type: 'chemical', tagPath: 'ChemicalSkid.Catalyst.Level', unit: '%', minValue: 0, maxValue: 100, currentValue: 62.0 },
+      { id: 'ReactorTemp', name: 'Reactor Internal Temperature TT-301', type: 'meter', tagPath: 'ChemicalSkid.Reactor.Temp', unit: '°C', minValue: 0, maxValue: 150, currentValue: 72.4 },
+      { id: 'ReactorPH', name: 'Effluent pH Transmitter AT-301', type: 'meter', tagPath: 'ChemicalSkid.Reactor.pH', unit: 'pH', minValue: 0, maxValue: 14, currentValue: 6.8 }
+    ]
+  },
+  blank: {
+    label: '✨ Blank Canvas (Custom)',
+    icon: '✨',
+    desc: 'Build your own custom industrial process synoptic screen from scratch using the equipment palette',
+    items: []
+  }
+};
+
 type ActiveTab = 'synoptic' | 'alarms' | 'tags' | 'symbols' | 'sbo';
 
 export function ScadaView() {
   const [tab, setTab] = useState<ActiveTab>('synoptic');
+  const [canvasMode, setCanvasMode] = useState<'monitor' | 'builder'>('monitor');
+  const [currentTemplate, setCurrentTemplate] = useState<string>('water_treatment');
+  const [canvasEquipment, setCanvasEquipment] = useState<CanvasEquipment[]>(() => {
+    const saved = localStorage.getItem('scada_canvas_equipment_v2');
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch {}
+    }
+    return TEMPLATES.water_treatment.items;
+  });
+  const [saveStatus, setSaveStatus] = useState<string>('');
+
   const [tags, setTags] = useState<ScadaTag[]>([]);
   const [alarms, setAlarms] = useState<ISA182Alarm[]>([]);
   const [kpis, setKpis] = useState<AlarmKPIs | null>(null);
@@ -196,6 +275,86 @@ export function ScadaView() {
     }
   };
 
+  // Studio Builder Handlers
+  const handleSelectTemplate = (tplKey: string) => {
+    setCurrentTemplate(tplKey);
+    const items = TEMPLATES[tplKey]?.items || [];
+    setCanvasEquipment([...items]);
+    localStorage.setItem('scada_canvas_equipment_v2', JSON.stringify(items));
+    setSaveStatus(`Loaded "${TEMPLATES[tplKey]?.label || tplKey}" template`);
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const handleAddEquipment = (type: 'tank' | 'pump' | 'valve' | 'meter' | 'chemical') => {
+    const count = canvasEquipment.filter(e => e.type === type).length + 1;
+    const newId = `${type.charAt(0).toUpperCase() + type.slice(1)}_${Date.now().toString().slice(-4)}`;
+    const defaultNames: Record<string, string> = {
+      tank: `Process Vessel TK-${100 + count}`,
+      pump: `Centrifugal Pump P-${100 + count}`,
+      valve: `Control Valve FCV-${100 + count}`,
+      meter: `Transmitter Sensor TT-${100 + count}`,
+      chemical: `Dosing Vessel TK-${200 + count}`
+    };
+    const defaultUnits: Record<string, string> = {
+      tank: '%',
+      pump: 'ON/OFF',
+      valve: '%',
+      meter: 'PSI',
+      chemical: '%'
+    };
+    const newItem: CanvasEquipment = {
+      id: newId,
+      name: defaultNames[type] || `Equipment ${newId}`,
+      type,
+      tagPath: `Plant.Area1.${newId}.Value`,
+      unit: defaultUnits[type] || 'EU',
+      minValue: 0,
+      maxValue: 100,
+      currentValue: type === 'pump' ? 1 : 50
+    };
+    const updated = [...canvasEquipment, newItem];
+    setCanvasEquipment(updated);
+    localStorage.setItem('scada_canvas_equipment_v2', JSON.stringify(updated));
+    setSaveStatus(`Added ${newItem.name} to canvas`);
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const handleUpdateEquipment = (id: string, patch: Partial<CanvasEquipment>) => {
+    const updated = canvasEquipment.map(item => item.id === id ? { ...item, ...patch } : item);
+    setCanvasEquipment(updated);
+  };
+
+  const handleRemoveEquipment = (id: string) => {
+    const updated = canvasEquipment.filter(item => item.id !== id);
+    setCanvasEquipment(updated);
+    localStorage.setItem('scada_canvas_equipment_v2', JSON.stringify(updated));
+    setSaveStatus('Equipment removed from canvas');
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const handleSaveLayout = () => {
+    localStorage.setItem('scada_canvas_equipment_v2', JSON.stringify(canvasEquipment));
+    setSaveStatus('Canvas layout saved successfully!');
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const handleResetLayout = () => {
+    const items = TEMPLATES[currentTemplate]?.items || TEMPLATES.water_treatment.items;
+    setCanvasEquipment([...items]);
+    localStorage.setItem('scada_canvas_equipment_v2', JSON.stringify(items));
+    setSaveStatus('Reset to template defaults');
+    setTimeout(() => setSaveStatus(''), 3000);
+  };
+
+  const getEquipmentLiveValue = (item: CanvasEquipment): number => {
+    const found = tags.find(t => t.path === item.tagPath);
+    if (found && typeof found.value === 'number') return found.value;
+    if (item.tagPath === 'WaterTreatment.Tank101.Level') return simLevel;
+    if (item.tagPath === 'WaterTreatment.Discharge.Pressure') return simPressure;
+    if (item.tagPath === 'WaterTreatment.Discharge.pH') return simPH;
+    return item.currentValue;
+  };
+
   // Synoptic Tag Resolvers
   const tankLevelTag = tags.find(t => t.path === 'WaterTreatment.Tank101.Level');
   const pumpStatusTag = tags.find(t => t.path === 'WaterTreatment.Pump101.Status');
@@ -247,6 +406,59 @@ export function ScadaView() {
             <Plus size={15} />
             <span>New Tag</span>
           </button>
+        </div>
+      </div>
+
+      {/* 3-Step Guide & SCADA Mode Switcher */}
+      <div className="scada-guide-banner">
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Sparkles size={18} style={{ color: 'var(--accent-cyan)' }} />
+            <strong style={{ color: '#fff', fontSize: '0.95rem' }}>How to Build & Run Your Own SCADA in 3 Steps:</strong>
+          </div>
+          <div className="scada-mode-toggle">
+            <button 
+              className={canvasMode === 'monitor' ? 'active' : ''} 
+              onClick={() => { setCanvasMode('monitor'); setTab('synoptic'); }}
+            >
+              <Eye size={14} /> Live Monitor
+            </button>
+            <button 
+              className={canvasMode === 'builder' ? 'active' : ''} 
+              onClick={() => { setCanvasMode('builder'); setTab('synoptic'); }}
+            >
+              <Wrench size={14} /> Studio Builder
+            </button>
+          </div>
+        </div>
+        <div className="scada-steps-grid">
+          <div className="scada-step-card">
+            <div className="scada-step-num">1</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#fff', marginBottom: '2px' }}>1. Define Tags</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                In <strong>Tag Namespace</strong>, register sensors & actuators (or map to device telemetry).
+              </div>
+            </div>
+          </div>
+          <div className="scada-step-card">
+            <div className="scada-step-num">2</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#fff', marginBottom: '2px' }}>2. Assemble Canvas</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                In <strong>Studio Builder</strong>, pick templates or drop Tanks, Pumps, Valves & Meters.
+              </div>
+            </div>
+          </div>
+          <div className="scada-step-card">
+            <div className="scada-step-num">3</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: '0.85rem', color: '#fff', marginBottom: '2px' }}>3. Bind & Monitor</div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.4 }}>
+                Bind equipment to tags. In <strong>Live Monitor</strong>, click equipment for faceplates & SBO.
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -320,16 +532,239 @@ export function ScadaView() {
       )}
 
       {/* -------------------------------------------------------------------- */}
-      {/* TAB 1: SYNOPTIC PROCESS HMI CANVAS                                   */}
+      {/* TAB 1: SYNOPTIC PROCESS HMI CANVAS & STUDIO BUILDER                  */}
       {/* -------------------------------------------------------------------- */}
       {tab === 'synoptic' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+          
+          {/* ================================================================ */}
+          {/* STUDIO BUILDER MODE                                              */}
+          {/* ================================================================ */}
+          {canvasMode === 'builder' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* Template Selection Toolbar */}
+              <div className="builder-toolbar">
+                <div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                    <Layers size={16} style={{ color: 'var(--accent-cyan)' }} />
+                    <strong style={{ fontSize: '0.95rem', color: '#fff' }}>Industry Process Templates</strong>
+                  </div>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Choose a pre-configured synoptic template or build from scratch:
+                  </div>
+                </div>
+
+                <div className="template-pill-group">
+                  {Object.entries(TEMPLATES).map(([key, tpl]) => (
+                    <button
+                      key={key}
+                      className={`template-pill ${currentTemplate === key ? 'active' : ''}`}
+                      onClick={() => handleSelectTemplate(key)}
+                    >
+                      <span>{tpl.icon}</span>
+                      <span>{tpl.label.split(' ')[1] || tpl.label}</span>
+                    </button>
+                  ))}
+                </div>
+
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button className="btn btn-secondary btn-sm" onClick={handleResetLayout} title="Reset to template defaults">
+                    <RotateCw size={13} />
+                    <span>Reset</span>
+                  </button>
+                  <button className="btn btn-primary btn-sm" onClick={handleSaveLayout} title="Persist changes to local storage">
+                    <Save size={13} />
+                    <span>Save Canvas</span>
+                  </button>
+                  <button className="btn btn-secondary btn-sm" style={{ borderColor: 'var(--accent-cyan)', color: 'var(--accent-cyan)' }} onClick={() => setCanvasMode('monitor')}>
+                    <Eye size={13} />
+                    <span>Live Monitor</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Save Status Confirmation */}
+              {saveStatus && (
+                <div style={{
+                  background: 'rgba(6, 182, 212, 0.15)',
+                  border: '1px solid var(--accent-cyan)',
+                  borderRadius: 'var(--radius-md)',
+                  padding: '8px 14px',
+                  fontSize: '0.8rem',
+                  color: '#fff',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '8px'
+                }}>
+                  <Sparkles size={15} style={{ color: 'var(--accent-cyan)' }} />
+                  <span>{saveStatus}</span>
+                </div>
+              )}
+
+              {/* Equipment Palette */}
+              <div className="card" style={{ padding: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <Plus size={16} style={{ color: 'var(--accent-cyan)' }} />
+                    <strong style={{ fontSize: '0.9rem', color: '#fff' }}>Add Process Equipment to Canvas</strong>
+                  </div>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Click an item to drop onto your synoptic screen
+                  </span>
+                </div>
+
+                <div className="builder-palette-grid">
+                  <div className="builder-palette-item" onClick={() => handleAddEquipment('tank')}>
+                    <span style={{ fontSize: '1.4rem' }}>🛢️</span>
+                    <span>+ Storage Tank</span>
+                  </div>
+                  <div className="builder-palette-item" onClick={() => handleAddEquipment('pump')}>
+                    <span style={{ fontSize: '1.4rem' }}>⚙️</span>
+                    <span>+ Centrifugal Pump</span>
+                  </div>
+                  <div className="builder-palette-item" onClick={() => handleAddEquipment('valve')}>
+                    <span style={{ fontSize: '1.4rem' }}>🚰</span>
+                    <span>+ Control Valve</span>
+                  </div>
+                  <div className="builder-palette-item" onClick={() => handleAddEquipment('meter')}>
+                    <span style={{ fontSize: '1.4rem' }}>📟</span>
+                    <span>+ Sensor / Meter</span>
+                  </div>
+                  <div className="builder-palette-item" onClick={() => handleAddEquipment('chemical')}>
+                    <span style={{ fontSize: '1.4rem' }}>🧪</span>
+                    <span>+ Dosing Vessel</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Tag Datalist */}
+              <datalist id="scada-tag-datalist">
+                {tags.map(t => (
+                  <option key={t.id} value={t.path}>{t.path} ({t.data_type})</option>
+                ))}
+              </datalist>
+
+              {/* Configured Equipment List */}
+              <div className="card" style={{ padding: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+                  <strong style={{ fontSize: '0.9rem', color: '#fff' }}>
+                    Configured Equipment on Canvas ({canvasEquipment.length})
+                  </strong>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+                    Bind each component to a tag or adjust its live test value:
+                  </span>
+                </div>
+
+                {canvasEquipment.length === 0 ? (
+                  <div style={{ padding: '30px', textAlign: 'center', color: 'var(--text-muted)' }}>
+                    Your canvas is empty. Select a template above or click any equipment in the palette to start building!
+                  </div>
+                ) : (
+                  <div className="builder-equip-list">
+                    {canvasEquipment.map(item => (
+                      <div key={item.id} className="builder-equip-card">
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ fontSize: '1.1rem' }}>
+                              {item.type === 'tank' ? '🛢️' : item.type === 'pump' ? '⚙️' : item.type === 'valve' ? '🚰' : item.type === 'chemical' ? '🧪' : '📟'}
+                            </span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--accent-cyan)', textTransform: 'uppercase' }}>
+                              {item.type}
+                            </span>
+                            <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>
+                              #{item.id}
+                            </span>
+                          </div>
+                          <button 
+                            className="btn btn-secondary btn-sm" 
+                            style={{ padding: '3px 6px', color: 'var(--accent-rose)' }}
+                            onClick={() => handleRemoveEquipment(item.id)}
+                            title="Remove equipment"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+
+                        <div>
+                          <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Equipment Name</label>
+                          <input 
+                            type="text" 
+                            className="form-input" 
+                            style={{ padding: '4px 8px', fontSize: '0.8rem' }}
+                            value={item.name} 
+                            onChange={e => handleUpdateEquipment(item.id, { name: e.target.value })} 
+                          />
+                        </div>
+
+                        <div>
+                          <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Bound Tag Path</label>
+                          <input 
+                            list="scada-tag-datalist" 
+                            className="form-input font-mono" 
+                            style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                            placeholder="e.g. Plant.Boiler.Pressure"
+                            value={item.tagPath} 
+                            onChange={e => handleUpdateEquipment(item.id, { tagPath: e.target.value })} 
+                          />
+                        </div>
+
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '8px' }}>
+                          <div>
+                            <label style={{ fontSize: '0.7rem', color: 'var(--text-muted)', display: 'block', marginBottom: '2px' }}>Unit</label>
+                            <input 
+                              type="text" 
+                              className="form-input" 
+                              style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                              value={item.unit} 
+                              onChange={e => handleUpdateEquipment(item.id, { unit: e.target.value })} 
+                            />
+                          </div>
+                          <div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '2px' }}>
+                              <span>Test Value:</span>
+                              <strong style={{ color: '#fff' }}>{getEquipmentLiveValue(item).toFixed(1)} {item.unit}</strong>
+                            </div>
+                            <input 
+                              type="range" 
+                              min={item.minValue} 
+                              max={item.maxValue} 
+                              step="0.5" 
+                              value={getEquipmentLiveValue(item)}
+                              onChange={e => {
+                                const val = parseFloat(e.target.value);
+                                handleUpdateEquipment(item.id, { currentValue: val });
+                                handleUpdateTag(item.tagPath, val);
+                              }}
+                              style={{ width: '100%' }}
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Builder Canvas Preview Box */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <strong style={{ fontSize: '0.95rem', color: '#fff' }}>Live Synoptic Canvas Preview</strong>
+                <button className="btn btn-primary btn-sm" onClick={() => setCanvasMode('monitor')}>
+                  <Eye size={13} />
+                  <span>Open Full Screen Monitor</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ================================================================ */}
+          {/* LIVE MONITOR CANVAS (Used in Monitor & Preview)                  */}
+          {/* ================================================================ */}
           <div className="synoptic-canvas-wrapper">
             <div className="synoptic-header-bar">
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <Activity size={18} style={{ color: 'var(--accent-cyan)' }} />
                 <h3 style={{ margin: 0, fontSize: '1.05rem', fontWeight: 700 }}>
-                  Water Treatment & Chemical Dosing Station (Plant.Area1)
+                  {TEMPLATES[currentTemplate]?.label || 'Industrial Process Synoptic'}
                 </h3>
               </div>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -339,6 +774,12 @@ export function ScadaView() {
                 <span className="badge-tag" style={{ background: 'rgba(255,255,255,0.06)', color: 'var(--text-secondary)' }}>
                   Click Equipment for Faceplate
                 </span>
+                {canvasMode === 'monitor' && (
+                  <button className="btn btn-secondary btn-sm" onClick={() => setCanvasMode('builder')}>
+                    <Wrench size={13} />
+                    <span>Studio Builder</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -354,173 +795,470 @@ export function ScadaView() {
                     <stop offset="0%" stopColor="#c084fc" stopOpacity="0.85" />
                     <stop offset="100%" stopColor="#7e22ce" stopOpacity="0.95" />
                   </linearGradient>
+                  <linearGradient id="steamGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+                    <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.85" />
+                    <stop offset="100%" stopColor="#b45309" stopOpacity="0.95" />
+                  </linearGradient>
                   <filter id="synGlow" x="-20%" y="-20%" width="140%" height="140%">
                     <feGaussianBlur stdDeviation="4" result="blur" />
                     <feComposite in="SourceGraphic" in2="blur" operator="over" />
                   </filter>
                 </defs>
 
-                {/* 1. Raw Water Storage Tank 101 */}
-                <g 
-                  className="synoptic-equipment" 
-                  onClick={() => setFaceplateItem({ id: 'Tank101', title: 'TK-101 Raw Water Storage', type: 'tank' })}
-                >
-                  <rect x="50" y="50" width="160" height="220" rx="12" fill="rgba(30, 41, 59, 0.75)" stroke="#475569" strokeWidth="2.5" />
-                  <text x="130" y="38" textAnchor="middle" fill="#cbd5e1" fontSize="12" fontWeight="800">TANK 101</text>
-                  <text x="130" y="290" textAnchor="middle" fill="#94a3b8" fontSize="10">Raw Water Buffer</text>
+                {/* TEMPLATE 1: Water Treatment & Chemical Dosing */}
+                {currentTemplate === 'water_treatment' && (
+                  <g>
+                    {/* 1. Raw Water Storage Tank 101 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      onClick={() => setFaceplateItem({ id: 'Tank101', title: 'TK-101 Raw Water Storage', type: 'tank' })}
+                    >
+                      <rect x="50" y="50" width="160" height="220" rx="12" fill="rgba(30, 41, 59, 0.75)" stroke="#475569" strokeWidth="2.5" />
+                      <text x="130" y="38" textAnchor="middle" fill="#cbd5e1" fontSize="12" fontWeight="800">TANK 101</text>
+                      <text x="130" y="290" textAnchor="middle" fill="#94a3b8" fontSize="10">Raw Water Buffer</text>
 
-                  {/* Liquid Column */}
-                  {(() => {
-                    const maxH = 205;
-                    const curH = (Math.min(100, Math.max(0, tankLevel)) / 100) * maxH;
-                    const y = 265 - curH;
-                    return (
-                      <g>
-                        <rect x="55" y={y} width="150" height={curH} rx="8" fill="url(#synWaterGrad)" />
-                        {/* High-High Limit Line */}
-                        <line x1="50" y1="72" x2="210" y2="72" stroke="#f43f5e" strokeWidth="2.5" strokeDasharray="5 3" />
-                        <text x="215" y="75" fill="#f43f5e" fontSize="9" fontWeight="700">90% HI-HI</text>
-                        {tankLevel > 90 && (
-                          <circle cx="200" cy="62" r="6" fill="#f43f5e" className="scada-pulse-beacon" />
-                        )}
+                      {/* Liquid Column */}
+                      {(() => {
+                        const maxH = 205;
+                        const curH = (Math.min(100, Math.max(0, tankLevel)) / 100) * maxH;
+                        const y = 265 - curH;
+                        return (
+                          <g>
+                            <rect x="55" y={y} width="150" height={curH} rx="8" fill="url(#synWaterGrad)" />
+                            <line x1="50" y1="72" x2="210" y2="72" stroke="#f43f5e" strokeWidth="2.5" strokeDasharray="5 3" />
+                            <text x="215" y="75" fill="#f43f5e" fontSize="9" fontWeight="700">90% HI-HI</text>
+                            {tankLevel > 90 && (
+                              <circle cx="200" cy="62" r="6" fill="#f43f5e" className="scada-pulse-beacon" />
+                            )}
+                          </g>
+                        );
+                      })()}
+
+                      <text x="130" y="160" textAnchor="middle" fill="#ffffff" fontSize="22" fontWeight="800" filter="url(#synGlow)">
+                        {tankLevel.toFixed(1)} %
+                      </text>
+                      <text x="130" y="180" textAnchor="middle" fill="#94a3b8" fontSize="11">
+                        {(tankLevel * 200).toFixed(0)} L / 20k L
+                      </text>
+                    </g>
+
+                    {/* 2. Pipe: Tank 101 to Pump 101 */}
+                    <path d="M 210 220 L 330 220" stroke="#475569" strokeWidth="14" strokeLinecap="round" />
+                    {isPumpRunning && (
+                      <path d="M 210 220 L 330 220" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" className="scada-pipe-flow" />
+                    )}
+
+                    {/* 3. Centrifugal Process Pump 101 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(360, 220)"
+                      onClick={() => setFaceplateItem({ id: 'Pump101', title: 'PUMP 101 Duty Centrifugal', type: 'pump' })}
+                    >
+                      <circle cx="0" cy="0" r="42" fill="rgba(15, 23, 42, 0.95)" stroke={isPumpRunning ? '#10b981' : '#f43f5e'} strokeWidth="3" filter={isPumpRunning ? 'url(#synGlow)' : undefined} />
+                      
+                      <g className={isPumpRunning ? 'scada-rotating' : ''}>
+                        <circle cx="0" cy="0" r="14" fill="#1e293b" stroke="#cbd5e1" strokeWidth="2" />
+                        <line x1="-26" y1="0" x2="26" y2="0" stroke="#f8fafc" strokeWidth="4" strokeLinecap="round" />
+                        <line x1="0" y1="-26" x2="0" y2="26" stroke="#f8fafc" strokeWidth="4" strokeLinecap="round" />
+                        <circle cx="0" cy="0" r="6" fill="#38bdf8" />
                       </g>
-                    );
-                  })()}
 
-                  <text x="130" y="160" textAnchor="middle" fill="#ffffff" fontSize="22" fontWeight="800" filter="url(#synGlow)">
-                    {tankLevel.toFixed(1)} %
-                  </text>
-                  <text x="130" y="180" textAnchor="middle" fill="#94a3b8" fontSize="11">
-                    {(tankLevel * 200).toFixed(0)} L / 20k L
-                  </text>
-                </g>
+                      <text x="0" y="60" textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="700">PUMP 101</text>
+                      <text x="0" y="75" textAnchor="middle" fill={isPumpRunning ? '#10b981' : '#f43f5e'} fontSize="10" fontWeight="800">
+                        {isPumpRunning ? 'RUNNING (1)' : 'STOPPED (0)'}
+                      </text>
+                    </g>
 
-                {/* 2. Pipe: Tank 101 to Pump 101 */}
-                <path d="M 210 220 L 330 220" stroke="#475569" strokeWidth="14" strokeLinecap="round" />
-                {isPumpRunning && (
-                  <path d="M 210 220 L 330 220" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" className="scada-pipe-flow" />
-                )}
+                    {/* 4. Pipe: Pump 101 to Modulating Valve FCV-101 */}
+                    <path d="M 402 220 L 510 220" stroke="#475569" strokeWidth="14" strokeLinecap="round" />
+                    {isPumpRunning && (
+                      <path d="M 402 220 L 510 220" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" className="scada-pipe-flow" />
+                    )}
 
-                {/* 3. Centrifugal Process Pump 101 */}
-                <g 
-                  className="synoptic-equipment" 
-                  transform="translate(360, 220)"
-                  onClick={() => setFaceplateItem({ id: 'Pump101', title: 'PUMP 101 Duty Centrifugal', type: 'pump' })}
-                >
-                  <circle cx="0" cy="0" r="42" fill="rgba(15, 23, 42, 0.95)" stroke={isPumpRunning ? '#10b981' : '#f43f5e'} strokeWidth="3" filter={isPumpRunning ? 'url(#synGlow)' : undefined} />
-                  
-                  {/* Rotating Impeller */}
-                  <g className={isPumpRunning ? 'scada-rotating' : ''}>
-                    <circle cx="0" cy="0" r="14" fill="#1e293b" stroke="#cbd5e1" strokeWidth="2" />
-                    <line x1="-26" y1="0" x2="26" y2="0" stroke="#f8fafc" strokeWidth="4" strokeLinecap="round" />
-                    <line x1="0" y1="-26" x2="0" y2="26" stroke="#f8fafc" strokeWidth="4" strokeLinecap="round" />
-                    <circle cx="0" cy="0" r="6" fill="#38bdf8" />
+                    {/* 5. Modulating Control Valve FCV-101 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(540, 220)"
+                      onClick={() => setFaceplateItem({ id: 'Valve101', title: 'FCV-101 Modulating Control Valve', type: 'valve' })}
+                    >
+                      <path d="M -22 -35 C -22 -48 22 -48 22 -35 Z" fill="#334155" stroke="#64748b" strokeWidth="2" />
+                      <line x1="0" y1="-35" x2="0" y2="-15" stroke="#94a3b8" strokeWidth="3" />
+                      <polygon points="-25,-18 -25,18 0,0" fill="#0ea5e9" stroke="#38bdf8" strokeWidth="2" />
+                      <polygon points="25,-18 25,18 0,0" fill="#0ea5e9" stroke="#38bdf8" strokeWidth="2" />
+                      <circle cx="0" cy="0" r="6" fill="#ffffff" />
+                      
+                      <text x="0" y="32" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">FCV-101</text>
+                      <text x="0" y="46" textAnchor="middle" fill="#38bdf8" fontSize="10" fontWeight="800">{valvePosition.toFixed(0)}% OPEN</text>
+                    </g>
+
+                    {/* 6. Pipe: Valve 101 to Discharge */}
+                    <path d="M 565 220 L 700 220 L 700 150 L 890 150" stroke="#475569" strokeWidth="14" strokeLinecap="round" strokeLinejoin="round" />
+                    {isPumpRunning && (
+                      <path d="M 565 220 L 700 220 L 700 150 L 890 150" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" strokeLinejoin="round" className="scada-pipe-flow" />
+                    )}
+
+                    {/* 7. Chemical Dosing Skid (Tank 202 Acid/Reagent) */}
+                    <g 
+                      className="synoptic-equipment" 
+                      onClick={() => setFaceplateItem({ id: 'ChemSkid', title: 'Chemical Acid Dosing Skid (TK-202)', type: 'chemical' })}
+                    >
+                      <rect x="580" y="35" width="100" height="120" rx="8" fill="rgba(30, 41, 59, 0.75)" stroke="#7c3aed" strokeWidth="2" />
+                      <text x="630" y="24" textAnchor="middle" fill="#c084fc" fontSize="11" fontWeight="700">TK-202 ACID</text>
+                      
+                      {(() => {
+                        const maxH = 105;
+                        const curH = (acidLevel / 100) * maxH;
+                        return (
+                          <rect x="585" y={150 - curH} width="90" height={curH} rx="4" fill="url(#chemAcidGrad)" />
+                        );
+                      })()}
+                      <text x="630" y="95" textAnchor="middle" fill="#fff" fontSize="14" fontWeight="800">{acidLevel.toFixed(1)} %</text>
+
+                      <path d="M 630 155 L 630 220" stroke="#a855f7" strokeWidth="6" strokeDasharray="4 2" />
+                      <circle cx="630" cy="220" r="4" fill="#a855f7" />
+                      <text x="630" y="175" textAnchor="start" fill="#c084fc" fontSize="9" fontWeight="700">Dosing {dosingSpeed.toFixed(0)} RPM</text>
+                    </g>
+
+                    {/* 8. Inline Transmitters */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(450, 140)"
+                      onClick={() => setFaceplateItem({ id: 'FT101', title: 'FT-101 Electromagnetic Flowmeter', type: 'meter' })}
+                    >
+                      <line x1="0" y1="20" x2="0" y2="80" stroke="#06b6d4" strokeWidth="2" strokeDasharray="3 2" />
+                      <rect x="-42" y="-18" width="84" height="36" rx="6" fill="#0f172a" stroke="#06b6d4" strokeWidth="2" />
+                      <text x="0" y="-4" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">FLOW (FT-101)</text>
+                      <text x="0" y="11" textAnchor="middle" fill="#fff" fontSize="13" fontWeight="800">
+                        {isPumpRunning ? flowVal.toFixed(1) : '0.0'} GPM
+                      </text>
+                    </g>
+
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(760, 95)"
+                      onClick={() => setFaceplateItem({ id: 'PT101', title: 'PT-101 Discharge Pressure Transmitter', type: 'meter' })}
+                    >
+                      <line x1="0" y1="20" x2="0" y2="55" stroke="#a855f7" strokeWidth="2" strokeDasharray="3 2" />
+                      <circle cx="0" cy="-5" r="26" fill="#0f172a" stroke="#a855f7" strokeWidth="2" />
+                      <text x="0" y="-12" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">DISCHARGE</text>
+                      <text x="0" y="4" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">
+                        {isPumpRunning ? pressureVal.toFixed(1) : '14.7'} PSI
+                      </text>
+                    </g>
+
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(850, 95)"
+                      onClick={() => setFaceplateItem({ id: 'AT101', title: 'AT-101 Analytical pH Sensor', type: 'meter' })}
+                    >
+                      <line x1="0" y1="20" x2="0" y2="55" stroke="#10b981" strokeWidth="2" strokeDasharray="3 2" />
+                      <circle cx="0" cy="-5" r="26" fill="#0f172a" stroke="#10b981" strokeWidth="2" />
+                      <text x="0" y="-12" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">EFFLUENT pH</text>
+                      <text x="0" y="4" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">
+                        {dischargePH.toFixed(2)}
+                      </text>
+                    </g>
+
+                    <text x="910" y="154" fill="#38bdf8" fontSize="11" fontWeight="800">DISCHARGE &gt;&gt;</text>
                   </g>
-
-                  <text x="0" y="60" textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="700">PUMP 101</text>
-                  <text x="0" y="75" textAnchor="middle" fill={isPumpRunning ? '#10b981' : '#f43f5e'} fontSize="10" fontWeight="800">
-                    {isPumpRunning ? 'RUNNING (1)' : 'STOPPED (0)'}
-                  </text>
-                </g>
-
-                {/* 4. Pipe: Pump 101 to Modulating Valve FCV-101 */}
-                <path d="M 402 220 L 510 220" stroke="#475569" strokeWidth="14" strokeLinecap="round" />
-                {isPumpRunning && (
-                  <path d="M 402 220 L 510 220" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" className="scada-pipe-flow" />
                 )}
 
-                {/* 5. Modulating Control Valve FCV-101 */}
-                <g 
-                  className="synoptic-equipment" 
-                  transform="translate(540, 220)"
-                  onClick={() => setFaceplateItem({ id: 'Valve101', title: 'FCV-101 Modulating Control Valve', type: 'valve' })}
-                >
-                  {/* Actuator */}
-                  <path d="M -22 -35 C -22 -48 22 -48 22 -35 Z" fill="#334155" stroke="#64748b" strokeWidth="2" />
-                  <line x1="0" y1="-35" x2="0" y2="-15" stroke="#94a3b8" strokeWidth="3" />
-                  <polygon points="-25,-18 -25,18 0,0" fill="#0ea5e9" stroke="#38bdf8" strokeWidth="2" />
-                  <polygon points="25,-18 25,18 0,0" fill="#0ea5e9" stroke="#38bdf8" strokeWidth="2" />
-                  <circle cx="0" cy="0" r="6" fill="#ffffff" />
-                  
-                  <text x="0" y="32" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">FCV-101</text>
-                  <text x="0" y="46" textAnchor="middle" fill="#38bdf8" fontSize="10" fontWeight="800">{valvePosition.toFixed(0)}% OPEN</text>
-                </g>
+                {/* TEMPLATE 2: Steam Boiler Station */}
+                {currentTemplate === 'steam_boiler' && (
+                  <g>
+                    {/* Feedwater Inflow Pipe & Pump */}
+                    <path d="M 40 220 L 140 220" stroke="#475569" strokeWidth="12" strokeLinecap="round" />
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(140, 220)"
+                      onClick={() => setFaceplateItem({ id: 'FeedPump', title: 'P-201 High-Pressure Feedwater Pump', type: 'pump' })}
+                    >
+                      <circle cx="0" cy="0" r="38" fill="rgba(15, 23, 42, 0.95)" stroke="#10b981" strokeWidth="3" />
+                      <g className="scada-rotating">
+                        <circle cx="0" cy="0" r="12" fill="#1e293b" stroke="#cbd5e1" strokeWidth="2" />
+                        <line x1="-22" y1="0" x2="22" y2="0" stroke="#f8fafc" strokeWidth="3" />
+                        <line x1="0" y1="-22" x2="0" y2="22" stroke="#f8fafc" strokeWidth="3" />
+                      </g>
+                      <text x="0" y="55" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">FEED PUMP</text>
+                    </g>
+                    <path d="M 178 220 L 260 220" stroke="#475569" strokeWidth="12" strokeLinecap="round" />
 
-                {/* 6. Pipe: Valve 101 to Discharge */}
-                <path d="M 565 220 L 700 220 L 700 150 L 890 150" stroke="#475569" strokeWidth="14" strokeLinecap="round" strokeLinejoin="round" />
-                {isPumpRunning && (
-                  <path d="M 565 220 L 700 220 L 700 150 L 890 150" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" strokeLinejoin="round" className="scada-pipe-flow" />
+                    {/* Boiler Steam Drum B-201 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      onClick={() => setFaceplateItem({ id: 'BoilerDrum', title: 'Boiler Steam Drum B-201', type: 'tank' })}
+                    >
+                      <rect x="260" y="60" width="220" height="180" rx="20" fill="rgba(30, 41, 59, 0.85)" stroke="#f59e0b" strokeWidth="3" />
+                      <text x="370" y="45" textAnchor="middle" fill="#fcd34d" fontSize="13" fontWeight="800">BOILER DRUM B-201</text>
+                      
+                      {/* Water Level in Drum */}
+                      <rect x="266" y="140" width="208" height="92" rx="10" fill="url(#synWaterGrad)" opacity="0.8" />
+                      <rect x="266" y="66" width="208" height="74" rx="10" fill="url(#steamGrad)" opacity="0.4" />
+                      
+                      <text x="370" y="120" textAnchor="middle" fill="#fff" fontSize="11" fontWeight="700">SATURATED STEAM DOME</text>
+                      <text x="370" y="180" textAnchor="middle" fill="#fff" fontSize="22" fontWeight="800" filter="url(#synGlow)">68.5 % LEVEL</text>
+                      
+                      {/* Burner Combustion Flame beneath drum */}
+                      <rect x="300" y="250" width="140" height="24" rx="6" fill="rgba(239, 68, 68, 0.2)" stroke="#ef4444" strokeWidth="1.5" />
+                      <text x="370" y="266" textAnchor="middle" fill="#f87171" fontSize="10" fontWeight="700">GAS BURNER FIRING (85%)</text>
+                    </g>
+
+                    {/* Steam Header Pipe from drum top */}
+                    <path d="M 480 110 L 880 110" stroke="#b45309" strokeWidth="14" strokeLinecap="round" />
+                    <path d="M 480 110 L 880 110" stroke="#fbbf24" strokeWidth="4" strokeDasharray="12 6" className="scada-pipe-flow" />
+
+                    {/* Main Steam Throttle Valve MSV-201 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(560, 110)"
+                      onClick={() => setFaceplateItem({ id: 'SteamValve', title: 'Main Steam Throttle Valve MSV-201', type: 'valve' })}
+                    >
+                      <polygon points="-25,-18 -25,18 0,0" fill="#f59e0b" stroke="#fbbf24" strokeWidth="2" />
+                      <polygon points="25,-18 25,18 0,0" fill="#f59e0b" stroke="#fbbf24" strokeWidth="2" />
+                      <circle cx="0" cy="0" r="6" fill="#fff" />
+                      <text x="0" y="32" textAnchor="middle" fill="#fcd34d" fontSize="11" fontWeight="700">MSV-201</text>
+                      <text x="0" y="46" textAnchor="middle" fill="#fff" fontSize="10" fontWeight="800">80% OPEN</text>
+                    </g>
+
+                    {/* Steam Pressure PT-201 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(700, 180)"
+                      onClick={() => setFaceplateItem({ id: 'SteamPressure', title: 'PT-201 Steam Header Pressure', type: 'meter' })}
+                    >
+                      <circle cx="0" cy="0" r="32" fill="#0f172a" stroke="#f59e0b" strokeWidth="2" />
+                      <text x="0" y="-8" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">STEAM PRESS</text>
+                      <text x="0" y="8" textAnchor="middle" fill="#fff" fontSize="13" fontWeight="800">18.4 bar</text>
+                      <line x1="0" y1="-32" x2="0" y2="-70" stroke="#f59e0b" strokeWidth="2" strokeDasharray="3 2" />
+                    </g>
+
+                    {/* Superheater Temp TT-201 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(810, 180)"
+                      onClick={() => setFaceplateItem({ id: 'SteamTemp', title: 'TT-201 Superheater Temperature', type: 'meter' })}
+                    >
+                      <circle cx="0" cy="0" r="32" fill="#0f172a" stroke="#ef4444" strokeWidth="2" />
+                      <text x="0" y="-8" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">STEAM TEMP</text>
+                      <text x="0" y="8" textAnchor="middle" fill="#fff" fontSize="13" fontWeight="800">285.0 °C</text>
+                      <line x1="0" y1="-32" x2="0" y2="-70" stroke="#ef4444" strokeWidth="2" strokeDasharray="3 2" />
+                    </g>
+
+                    <text x="900" y="114" fill="#fbbf24" fontSize="11" fontWeight="800">TURBINE &gt;&gt;</text>
+                  </g>
                 )}
 
-                {/* 7. Chemical Dosing Skid (Tank 202 Acid/Reagent) */}
-                <g 
-                  className="synoptic-equipment" 
-                  onClick={() => setFaceplateItem({ id: 'ChemSkid', title: 'Chemical Acid Dosing Skid (TK-202)', type: 'chemical' })}
-                >
-                  <rect x="580" y="35" width="100" height="120" rx="8" fill="rgba(30, 41, 59, 0.75)" stroke="#7c3aed" strokeWidth="2" />
-                  <text x="630" y="24" textAnchor="middle" fill="#c084fc" fontSize="11" fontWeight="700">TK-202 ACID</text>
-                  
-                  {/* Acid fill */}
-                  {(() => {
-                    const maxH = 105;
-                    const curH = (acidLevel / 100) * maxH;
-                    return (
-                      <rect x="585" y={150 - curH} width="90" height={curH} rx="4" fill="url(#chemAcidGrad)" />
-                    );
-                  })()}
-                  <text x="630" y="95" textAnchor="middle" fill="#fff" fontSize="14" fontWeight="800">{acidLevel.toFixed(1)} %</text>
+                {/* TEMPLATE 3: Chemical Reactor Skid */}
+                {currentTemplate === 'chemical_reactor' && (
+                  <g>
+                    {/* Reagent Feed Valve & Inflow */}
+                    <path d="M 60 120 L 220 120" stroke="#475569" strokeWidth="12" strokeLinecap="round" />
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(130, 120)"
+                      onClick={() => setFaceplateItem({ id: 'ReagentValve', title: 'Reagent Feed Valve FV-301', type: 'valve' })}
+                    >
+                      <polygon points="-20,-15 -20,15 0,0" fill="#10b981" stroke="#34d399" strokeWidth="2" />
+                      <polygon points="20,-15 20,15 0,0" fill="#10b981" stroke="#34d399" strokeWidth="2" />
+                      <circle cx="0" cy="0" r="5" fill="#fff" />
+                      <text x="0" y="30" textAnchor="middle" fill="#cbd5e1" fontSize="10" fontWeight="700">FV-301 (45%)</text>
+                    </g>
 
-                  {/* Dosing Quill Pipe into Main Header */}
-                  <path d="M 630 155 L 630 220" stroke="#a855f7" strokeWidth="6" strokeDasharray="4 2" />
-                  <circle cx="630" cy="220" r="4" fill="#a855f7" />
-                  <text x="630" y="175" textAnchor="start" fill="#c084fc" fontSize="9" fontWeight="700">Dosing {dosingSpeed.toFixed(0)} RPM</text>
-                </g>
+                    {/* Continuous Reactor Vessel RX-301 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      onClick={() => setFaceplateItem({ id: 'ReactorVessel', title: 'Continuous Reactor Vessel RX-301', type: 'tank' })}
+                    >
+                      <rect x="220" y="50" width="220" height="220" rx="30" fill="rgba(30, 41, 59, 0.85)" stroke="#10b981" strokeWidth="3" />
+                      <text x="330" y="38" textAnchor="middle" fill="#6ee7b7" fontSize="13" fontWeight="800">REACTOR VESSEL RX-301</text>
+                      
+                      {/* Reactant Liquid with agitator */}
+                      <rect x="226" y="120" width="208" height="142" rx="15" fill="rgba(16, 185, 129, 0.45)" />
+                      
+                      {/* Spinning Agitator Mixer in Vessel Center */}
+                      <line x1="330" y1="50" x2="330" y2="200" stroke="#cbd5e1" strokeWidth="4" />
+                      <g transform="translate(330, 200)" className="scada-rotating">
+                        <polygon points="-35,-8 35,8 0,0" fill="#38bdf8" />
+                        <polygon points="-35,8 35,-8 0,0" fill="#38bdf8" />
+                      </g>
+                      
+                      <text x="330" y="160" textAnchor="middle" fill="#fff" fontSize="22" fontWeight="800" filter="url(#synGlow)">54.2 % VOL</text>
+                      <text x="330" y="240" textAnchor="middle" fill="#cbd5e1" fontSize="10" fontWeight="700">AGITATOR 750 RPM</text>
+                    </g>
 
-                {/* 8. Inline Transmitters */}
-                {/* Flow Transmitter FT-101 */}
-                <g 
-                  className="synoptic-equipment" 
-                  transform="translate(450, 140)"
-                  onClick={() => setFaceplateItem({ id: 'FT101', title: 'FT-101 Electromagnetic Flowmeter', type: 'meter' })}
-                >
-                  <line x1="0" y1="20" x2="0" y2="80" stroke="#06b6d4" strokeWidth="2" strokeDasharray="3 2" />
-                  <rect x="-42" y="-18" width="84" height="36" rx="6" fill="#0f172a" stroke="#06b6d4" strokeWidth="2" />
-                  <text x="0" y="-4" textAnchor="middle" fill="#94a3b8" fontSize="9" fontWeight="700">FLOW (FT-101)</text>
-                  <text x="0" y="11" textAnchor="middle" fill="#fff" fontSize="13" fontWeight="800">
-                    {isPumpRunning ? flowVal.toFixed(1) : '0.0'} GPM
-                  </text>
-                </g>
+                    {/* Recirculation Loop Pipe & Pump */}
+                    <path d="M 330 270 L 330 310 L 520 310 L 520 220" stroke="#475569" strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" />
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(520, 220)"
+                      onClick={() => setFaceplateItem({ id: 'AgitatorPump', title: 'Reactor Recirculation Pump P-301', type: 'pump' })}
+                    >
+                      <circle cx="0" cy="0" r="38" fill="rgba(15, 23, 42, 0.95)" stroke="#10b981" strokeWidth="3" />
+                      <g className="scada-rotating">
+                        <circle cx="0" cy="0" r="12" fill="#1e293b" stroke="#cbd5e1" strokeWidth="2" />
+                        <line x1="-22" y1="0" x2="22" y2="0" stroke="#f8fafc" strokeWidth="3" />
+                        <line x1="0" y1="-22" x2="0" y2="22" stroke="#f8fafc" strokeWidth="3" />
+                      </g>
+                      <text x="0" y="55" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">RECIRC P-301</text>
+                    </g>
+                    <path d="M 520 182 L 520 120 L 440 120" stroke="#475569" strokeWidth="12" strokeLinecap="round" strokeLinejoin="round" />
 
-                {/* Pressure Transmitter PT-101 */}
-                <g 
-                  className="synoptic-equipment" 
-                  transform="translate(760, 95)"
-                  onClick={() => setFaceplateItem({ id: 'PT101', title: 'PT-101 Discharge Pressure Transmitter', type: 'meter' })}
-                >
-                  <line x1="0" y1="20" x2="0" y2="55" stroke="#a855f7" strokeWidth="2" strokeDasharray="3 2" />
-                  <circle cx="0" cy="-5" r="26" fill="#0f172a" stroke="#a855f7" strokeWidth="2" />
-                  <text x="0" y="-12" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">DISCHARGE</text>
-                  <text x="0" y="4" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">
-                    {isPumpRunning ? pressureVal.toFixed(1) : '14.7'} PSI
-                  </text>
-                </g>
+                    {/* Catalyst Dosing Vessel TK-305 */}
+                    <g 
+                      className="synoptic-equipment" 
+                      onClick={() => setFaceplateItem({ id: 'ReagentTank', title: 'Catalyst Reagent Dosing TK-305', type: 'chemical' })}
+                    >
+                      <rect x="580" y="45" width="100" height="110" rx="8" fill="rgba(30, 41, 59, 0.8)" stroke="#a855f7" strokeWidth="2" />
+                      <text x="630" y="35" textAnchor="middle" fill="#c084fc" fontSize="10" fontWeight="700">TK-305 CATALYST</text>
+                      <rect x="585" y="85" width="90" height="66" rx="4" fill="url(#chemAcidGrad)" />
+                      <text x="630" y="125" textAnchor="middle" fill="#fff" fontSize="14" fontWeight="800">62.0 %</text>
+                    </g>
 
-                {/* pH Sensor AT-101 */}
-                <g 
-                  className="synoptic-equipment" 
-                  transform="translate(850, 95)"
-                  onClick={() => setFaceplateItem({ id: 'AT101', title: 'AT-101 Analytical pH Sensor', type: 'meter' })}
-                >
-                  <line x1="0" y1="20" x2="0" y2="55" stroke="#10b981" strokeWidth="2" strokeDasharray="3 2" />
-                  <circle cx="0" cy="-5" r="26" fill="#0f172a" stroke="#10b981" strokeWidth="2" />
-                  <text x="0" y="-12" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">EFFLUENT pH</text>
-                  <text x="0" y="4" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">
-                    {dischargePH.toFixed(2)}
-                  </text>
-                </g>
+                    {/* Analytical Transmitters (Temp & pH) */}
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(750, 120)"
+                      onClick={() => setFaceplateItem({ id: 'ReactorTemp', title: 'TT-301 Reactor Temperature', type: 'meter' })}
+                    >
+                      <circle cx="0" cy="0" r="30" fill="#0f172a" stroke="#f43f5e" strokeWidth="2" />
+                      <text x="0" y="-6" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">RX TEMP</text>
+                      <text x="0" y="8" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">72.4 °C</text>
+                    </g>
 
-                {/* Effluent Outlet Indicator */}
-                <text x="910" y="154" fill="#38bdf8" fontSize="11" fontWeight="800">DISCHARGE &gt;&gt;</text>
+                    <g 
+                      className="synoptic-equipment" 
+                      transform="translate(840, 120)"
+                      onClick={() => setFaceplateItem({ id: 'ReactorPH', title: 'AT-301 Effluent pH Analyzer', type: 'meter' })}
+                    >
+                      <circle cx="0" cy="0" r="30" fill="#0f172a" stroke="#10b981" strokeWidth="2" />
+                      <text x="0" y="-6" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">EFFLUENT pH</text>
+                      <text x="0" y="8" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">6.80</text>
+                    </g>
+
+                    <text x="900" y="124" fill="#34d399" fontSize="11" fontWeight="800">PRODUCT &gt;&gt;</text>
+                  </g>
+                )}
+
+                {/* TEMPLATE 4 / CUSTOM: Dynamic Canvas Rendering */}
+                {(currentTemplate === 'blank' || (currentTemplate !== 'water_treatment' && currentTemplate !== 'steam_boiler' && currentTemplate !== 'chemical_reactor')) && (
+                  <g>
+                    {canvasEquipment.length === 0 ? (
+                      <g transform="translate(480, 160)">
+                        <text x="0" y="-20" textAnchor="middle" fill="#94a3b8" fontSize="18" fontWeight="700">
+                          SCADA Process Canvas is Empty
+                        </text>
+                        <text x="0" y="10" textAnchor="middle" fill="#64748b" fontSize="13">
+                          Click "+ Add Equipment" or choose an Industry Template above to assemble your HMI!
+                        </text>
+                      </g>
+                    ) : (
+                      <g>
+                        {/* Process Header Pipe spanning canvas */}
+                        <line x1="40" y1="180" x2="920" y2="180" stroke="#334155" strokeWidth="14" strokeLinecap="round" />
+                        <line x1="40" y1="180" x2="920" y2="180" stroke="#06b6d4" strokeWidth="4" strokeDasharray="10 6" className="scada-pipe-flow" />
+
+                        {canvasEquipment.map((item, idx) => {
+                          const count = canvasEquipment.length;
+                          const spacing = 840 / Math.max(1, count);
+                          const posX = 70 + idx * spacing + (spacing / 2);
+                          const curVal = getEquipmentLiveValue(item);
+
+                          if (item.type === 'tank') {
+                            const curH = (Math.min(100, Math.max(0, curVal)) / 100) * 120;
+                            return (
+                              <g 
+                                key={item.id} 
+                                className="synoptic-equipment" 
+                                transform={`translate(${posX - 45}, 70)`}
+                                onClick={() => setFaceplateItem({ id: item.id, title: item.name, type: 'tank' })}
+                              >
+                                <rect x="0" y="0" width="90" height="140" rx="10" fill="rgba(30, 41, 59, 0.85)" stroke="#06b6d4" strokeWidth="2.5" />
+                                <rect x="5" y={135 - curH} width="80" height={curH} rx="6" fill="url(#synWaterGrad)" />
+                                <text x="45" y="-10" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">{item.name}</text>
+                                <text x="45" y="75" textAnchor="middle" fill="#fff" fontSize="16" fontWeight="800">{curVal.toFixed(1)} {item.unit}</text>
+                                <text x="45" y="155" textAnchor="middle" fill="#94a3b8" fontSize="9">{item.tagPath}</text>
+                              </g>
+                            );
+                          }
+
+                          if (item.type === 'pump') {
+                            const isRunning = curVal > 0;
+                            return (
+                              <g 
+                                key={item.id} 
+                                className="synoptic-equipment" 
+                                transform={`translate(${posX}, 180)`}
+                                onClick={() => setFaceplateItem({ id: item.id, title: item.name, type: 'pump' })}
+                              >
+                                <circle cx="0" cy="0" r="36" fill="rgba(15, 23, 42, 0.95)" stroke={isRunning ? '#10b981' : '#f43f5e'} strokeWidth="3" />
+                                <g className={isRunning ? 'scada-rotating' : ''}>
+                                  <circle cx="0" cy="0" r="10" fill="#1e293b" stroke="#cbd5e1" strokeWidth="2" />
+                                  <line x1="-22" y1="0" x2="22" y2="0" stroke="#f8fafc" strokeWidth="3" />
+                                  <line x1="0" y1="-22" x2="0" y2="22" stroke="#f8fafc" strokeWidth="3" />
+                                </g>
+                                <text x="0" y="-45" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">{item.name}</text>
+                                <text x="0" y="55" textAnchor="middle" fill={isRunning ? '#10b981' : '#f43f5e'} fontSize="10" fontWeight="800">
+                                  {isRunning ? 'RUNNING' : 'STOPPED'}
+                                </text>
+                              </g>
+                            );
+                          }
+
+                          if (item.type === 'valve') {
+                            return (
+                              <g 
+                                key={item.id} 
+                                className="synoptic-equipment" 
+                                transform={`translate(${posX}, 180)`}
+                                onClick={() => setFaceplateItem({ id: item.id, title: item.name, type: 'valve' })}
+                              >
+                                <polygon points="-22,-16 -22,16 0,0" fill="#0ea5e9" stroke="#38bdf8" strokeWidth="2" />
+                                <polygon points="22,-16 22,16 0,0" fill="#0ea5e9" stroke="#38bdf8" strokeWidth="2" />
+                                <circle cx="0" cy="0" r="5" fill="#fff" />
+                                <text x="0" y="-28" textAnchor="middle" fill="#cbd5e1" fontSize="11" fontWeight="700">{item.name}</text>
+                                <text x="0" y="32" textAnchor="middle" fill="#38bdf8" fontSize="10" fontWeight="800">{curVal.toFixed(0)}% OPEN</text>
+                              </g>
+                            );
+                          }
+
+                          if (item.type === 'chemical') {
+                            const curH = (Math.min(100, Math.max(0, curVal)) / 100) * 80;
+                            return (
+                              <g 
+                                key={item.id} 
+                                className="synoptic-equipment" 
+                                transform={`translate(${posX - 35}, 60)`}
+                                onClick={() => setFaceplateItem({ id: item.id, title: item.name, type: 'chemical' })}
+                              >
+                                <rect x="0" y="0" width="70" height="90" rx="8" fill="rgba(30, 41, 59, 0.85)" stroke="#a855f7" strokeWidth="2" />
+                                <rect x="4" y={86 - curH} width="62" height={curH} rx="4" fill="url(#chemAcidGrad)" />
+                                <text x="35" y="-8" textAnchor="middle" fill="#c084fc" fontSize="10" fontWeight="700">{item.name}</text>
+                                <text x="35" y="50" textAnchor="middle" fill="#fff" fontSize="13" fontWeight="800">{curVal.toFixed(1)}%</text>
+                                <line x1="35" y1="90" x2="35" y2="120" stroke="#a855f7" strokeWidth="4" strokeDasharray="3 2" />
+                              </g>
+                            );
+                          }
+
+                          // Default: meter
+                          return (
+                            <g 
+                              key={item.id} 
+                              className="synoptic-equipment" 
+                              transform={`translate(${posX}, 95)`}
+                              onClick={() => setFaceplateItem({ id: item.id, title: item.name, type: 'meter' })}
+                            >
+                              <line x1="0" y1="20" x2="0" y2="85" stroke="#06b6d4" strokeWidth="2" strokeDasharray="3 2" />
+                              <circle cx="0" cy="0" r="28" fill="#0f172a" stroke="#06b6d4" strokeWidth="2" />
+                              <text x="0" y="-8" textAnchor="middle" fill="#94a3b8" fontSize="8" fontWeight="700">{item.name}</text>
+                              <text x="0" y="8" textAnchor="middle" fill="#fff" fontSize="12" fontWeight="800">{curVal.toFixed(1)}</text>
+                              <text x="0" y="20" textAnchor="middle" fill="#38bdf8" fontSize="8" fontWeight="700">{item.unit}</text>
+                            </g>
+                          );
+                        })}
+                      </g>
+                    )}
+                  </g>
+                )}
               </svg>
             </div>
           </div>
@@ -1140,10 +1878,25 @@ export function ScadaView() {
             </div>
 
             <div className="faceplate-body">
+              {/* Dynamic tag path resolution for faceplate */}
+              {(() => {
+                const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                const boundPath = eq ? eq.tagPath : 
+                  faceplateItem.id === 'Pump101' ? 'WaterTreatment.Pump101.Status' :
+                  faceplateItem.id === 'Valve101' ? 'WaterTreatment.Valve101.Position' :
+                  faceplateItem.id === 'Tank101' ? 'WaterTreatment.Tank101.Level' :
+                  faceplateItem.id === 'ChemSkid' ? 'WaterTreatment.Chemical.AcidLevel' : '';
+                return boundPath ? (
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: '4px', fontFamily: 'monospace' }}>
+                    Bound Tag: <span style={{ color: 'var(--accent-cyan)' }}>{boundPath}</span>
+                  </div>
+                ) : null;
+              })()}
+
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(255, 255, 255, 0.03)', padding: '12px', borderRadius: 'var(--radius-md)' }}>
                 <div>
                   <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Control Mode</div>
-                  <strong style={{ color: 'var(--accent-cyan)' }}>REMOTE MANUAL</strong>
+                  <strong style={{ color: 'var(--accent-cyan)' }}>REMOTE SUPERVISORY (SBO)</strong>
                 </div>
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <button className="btn btn-secondary btn-sm" style={{ background: 'var(--accent-cyan)', color: '#000' }}>Manual</button>
@@ -1157,7 +1910,7 @@ export function ScadaView() {
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
                     <span>Current Status:</span>
                     <strong style={{ color: isPumpRunning ? 'var(--accent-emerald)' : 'var(--accent-rose)' }}>
-                      {isPumpRunning ? 'RUNNING' : 'STOPPED'}
+                      {isPumpRunning ? 'RUNNING (1)' : 'STOPPED (0)'}
                     </strong>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem' }}>
@@ -1170,7 +1923,9 @@ export function ScadaView() {
                       className="btn btn-primary" 
                       style={{ flex: 1 }}
                       onClick={() => {
-                        handleSelectSBO('WaterTreatment.Pump101.Status', 1);
+                        const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                        const tag = eq ? eq.tagPath : 'WaterTreatment.Pump101.Status';
+                        handleSelectSBO(tag, 1);
                         setTab('sbo');
                         setFaceplateItem(null);
                       }}
@@ -1182,7 +1937,9 @@ export function ScadaView() {
                       className="btn btn-secondary" 
                       style={{ flex: 1, borderColor: 'var(--accent-rose)', color: 'var(--accent-rose)' }}
                       onClick={() => {
-                        handleSelectSBO('WaterTreatment.Pump101.Status', 0);
+                        const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                        const tag = eq ? eq.tagPath : 'WaterTreatment.Pump101.Status';
+                        handleSelectSBO(tag, 0);
                         setTab('sbo');
                         setFaceplateItem(null);
                       }}
@@ -1205,13 +1962,27 @@ export function ScadaView() {
                     min="0" 
                     max="100" 
                     value={valvePosition}
-                    onChange={e => handleUpdateTag('WaterTreatment.Valve101.Position', parseFloat(e.target.value))}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value);
+                      const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                      const tag = eq ? eq.tagPath : 'WaterTreatment.Valve101.Position';
+                      handleUpdateTag(tag, v);
+                    }}
                     style={{ width: '100%' }}
                   />
                   <div style={{ display: 'flex', gap: '8px' }}>
-                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => handleUpdateTag('WaterTreatment.Valve101.Position', 0)}>Close (0%)</button>
-                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => handleUpdateTag('WaterTreatment.Valve101.Position', 50)}>50%</button>
-                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => handleUpdateTag('WaterTreatment.Valve101.Position', 100)}>Full Open (100%)</button>
+                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => {
+                      const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                      handleUpdateTag(eq ? eq.tagPath : 'WaterTreatment.Valve101.Position', 0);
+                    }}>Close (0%)</button>
+                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => {
+                      const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                      handleUpdateTag(eq ? eq.tagPath : 'WaterTreatment.Valve101.Position', 50);
+                    }}>50%</button>
+                    <button className="btn btn-secondary btn-sm" style={{ flex: 1 }} onClick={() => {
+                      const eq = canvasEquipment.find(e => e.id === faceplateItem.id);
+                      handleUpdateTag(eq ? eq.tagPath : 'WaterTreatment.Valve101.Position', 100);
+                    }}>Full Open (100%)</button>
                   </div>
                 </div>
               )}

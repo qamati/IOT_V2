@@ -75,6 +75,7 @@ export default function App() {
   const [newDeviceLabel, setNewDeviceLabel] = useState('');
   const [newDeviceToken, setNewDeviceToken] = useState('');
   const [createLoading, setCreateLoading] = useState(false);
+  const [createDeviceError, setCreateDeviceError] = useState('');
 
   // Device Detail & Telemetry State
   const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
@@ -165,7 +166,7 @@ export default function App() {
       setDevices(res.data || []);
       for (const dev of res.data || []) {
         api.getCredentials(dev.id).then(creds => {
-          setDeviceTokens(prev => ({ ...prev, [dev.id]: creds.credentials_id }));
+          setDeviceTokens(prev => ({ ...prev, [dev.id]: creds.credentials_value || creds.credentials_id || 'Active' }));
         }).catch(() => {});
         api.getDeviceActivity(dev.id).then(act => {
           setDeviceActivities(prev => ({ ...prev, [dev.id]: act }));
@@ -601,19 +602,23 @@ export default function App() {
     e.preventDefault();
     if (!newDeviceName.trim()) return;
     setCreateLoading(true);
+    setCreateDeviceError('');
     try {
       const generatedToken = newDeviceToken.trim() || `DEV_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
       const res = await api.createDevice(newDeviceName.trim(), newDeviceLabel.trim(), generatedToken);
-      setDeviceTokens(prev => ({ ...prev, [res.device.id]: res.credentials.credentials_id }));
+      const tokenVal = res.credentials?.credentials_value || res.credentials?.credentials_id || generatedToken;
+      setDeviceTokens(prev => ({ ...prev, [res.device.id]: tokenVal }));
       setShowCreateModal(false);
       setNewDeviceName('');
       setNewDeviceLabel('');
       setNewDeviceToken('');
+      setCreateDeviceError('');
       await loadDevices();
       setSelectedDeviceId(res.device.id);
+      setSelectedDevice(res.device);
       setActiveTab('device-detail');
     } catch (err: any) {
-      alert('Failed to create device: ' + err.message);
+      setCreateDeviceError(err.message || 'Failed to create device');
     } finally {
       setCreateLoading(false);
     }
@@ -2254,6 +2259,19 @@ export default function App() {
             </div>
 
             <form onSubmit={handleCreateDevice}>
+              {createDeviceError && (
+                <div style={{
+                  background: 'rgba(244, 63, 94, 0.15)',
+                  border: '1px solid rgba(244, 63, 94, 0.3)',
+                  color: 'var(--accent-rose)',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: '0.85rem',
+                  marginBottom: '14px'
+                }}>
+                  {createDeviceError}
+                </div>
+              )}
               <div className="form-group">
                 <label className="form-label">Device Name *</label>
                 <input 
