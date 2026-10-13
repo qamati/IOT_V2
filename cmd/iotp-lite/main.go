@@ -198,6 +198,7 @@ func main() {
 	var rpcSvc rpc.Service
 	var otaSvc ota.Service
 	var integrationSvc integration.Service
+	var edgeHub edge.Service
 	if pool != nil {
 		rpcStore := rpc.NewPostgresStore(pool)
 		rpcSvc = rpc.NewDefaultService(rpcStore, logger)
@@ -205,13 +206,15 @@ func main() {
 		otaSvc = ota.NewService(otaStore, attrStore, logger)
 		integStore := integration.NewPostgresStore(pool)
 		integrationSvc = integration.NewService(integStore, devMgr, tsStore, attrStore, tracker, ruleEngine)
-		logger.Info("durable PostgreSQL stores initialized for Downlink RPC, OTA Management, and Integrations & Converters")
+		edgeStore := edge.NewPostgresStore(pool)
+		edgeHub = edge.NewService(edgeStore, tsStore, alarmSvc)
+		logger.Info("durable PostgreSQL stores initialized for Downlink RPC, OTA Management, Integrations, and Edge Fleet")
 	} else {
 		rpcSvc = rpc.NewMemoryService()
 		otaSvc = ota.NewService(nil, attrStore, logger)
 		integrationSvc = integration.NewMemoryService(devMgr, tsStore, attrStore, tracker, ruleEngine)
+		edgeHub = edge.NewMemoryHub(tsStore, alarmSvc)
 	}
-	edgeHub := edge.NewMemoryHub(tsStore, alarmSvc)
 
 	// Seed demo SCADA process tags for Water Treatment HMI
 	_ = scadaSvc.RegisterTag(ctx, &scada.Tag{

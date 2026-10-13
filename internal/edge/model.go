@@ -27,6 +27,8 @@ type EdgeNode struct {
 	BacklogCount     int64    `json:"backlog_count"`
 	AssignedDevices  []ids.ID `json:"assigned_devices"`
 	AssignedProfiles []ids.ID `json:"assigned_profiles"`
+	DownlinkSeq      int64    `json:"downlink_seq"`
+	UplinkSeq        int64    `json:"uplink_seq"`
 	Version          int      `json:"version"`
 }
 
@@ -56,4 +58,47 @@ type SyncAck struct {
 	ProcessedItems   int      `json:"processed_items"`
 	DownlinksPending int      `json:"downlinks_pending"`
 	Downlinks        []any    `json:"downlinks,omitempty"`
+}
+
+// SyncJournalEntry logs processed edge sync batches.
+type SyncJournalEntry struct {
+	ID             ids.ID `json:"id"`
+	EdgeID         ids.ID `json:"edge_id"`
+	Sequence       int64  `json:"sequence"`
+	LaneL0Count    int    `json:"lane_l0_count"`
+	LaneL1Count    int    `json:"lane_l1_count"`
+	LaneL2Count    int    `json:"lane_l2_count"`
+	ProcessedItems int    `json:"processed_items"`
+	Status         string `json:"status"`
+	SyncedAt       int64  `json:"synced_at"`
+}
+
+// DeviceAssignmentReq specifies devices to assign to or unassign from an edge node.
+type DeviceAssignmentReq struct {
+	DeviceIDs []ids.ID `json:"device_ids"`
+}
+
+// RemoteCommandReq represents an operator command sent down to an edge node.
+type RemoteCommandReq struct {
+	Command string         `json:"command"` // REBOOT | FORCE_SYNC | COLLECT_LOGS
+	Params  map[string]any `json:"params,omitempty"`
+}
+
+// RemoteCommandResp reports the result of a remote edge operation.
+type RemoteCommandResp struct {
+	Command    string `json:"command"`
+	Success    bool   `json:"success"`
+	Message    string `json:"message"`
+	ExecutedAt int64  `json:"executed_at"`
+}
+
+// EdgeConfiguration contains configuration closure pulled by an edge runtime.
+type EdgeConfiguration struct {
+	EdgeID          ids.ID   `json:"edge_id"`
+	TenantID        ids.ID   `json:"tenant_id"`
+	Name            string   `json:"name"`
+	AssignedDevices []ids.ID `json:"assigned_devices"`
+	DownlinkSeq     int64    `json:"downlink_seq"`
+	UplinkSeq       int64    `json:"uplink_seq"`
+	SyncIntervalSec int      `json:"sync_interval_sec"`
 }

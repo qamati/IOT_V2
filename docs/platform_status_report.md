@@ -105,9 +105,9 @@ pie title 26 Services Implementation Breakdown
 - **Spec:** Declarative JSON/ChirpStack/TTN/Hex/CSV converters, expression conversions with linear mathematical formulas, HTTP webhooks with auto-device provisioning, RFC 7252 CoAP UDP transport, and industrial Modbus TCP Field Gateway connector SPI.
 - **Reality:** ✅ **100% Implemented.** Durable PostgreSQL persistence for Converters (`converter`), Integrations (`integration`), runtime status tracking (`integration_status`), and stream checkpoints (`integration_checkpoint`) with RLS. Enhanced converter engine supporting declarative JSON/CSV/Hex, TTN v3, ChirpStack v4, and mathematical expressions (`ModeExpression`). Ingestion HTTP webhooks with auto-device provisioning and routing keys. RFC 7252 CoAP UDP transport on `:5683` with CON/ACK cycle and token telemetry/attributes endpoints. Industrial Connector SPI (`pkg/connectors`) with Modbus TCP polling and virtual PLC slave simulation. React Console Integrations UI (`IntegrationsView.tsx`) with 4 interactive tabs (Connectors, Converter Catalog, Live Test Harness, Industrial Field Gateway).
 
-### Stage 9 — Edge Fleet & Store-and-Forward
-- **Spec:** Cloud Edge Hub, 3-tier priority lanes, sync protocol, standalone edge Go runtime binary with local SQLite/Badger store-and-forward.
-- **Reality:** 🟡 **40% Implemented.** Cloud Edge Hub and sync protocol work in memory. Standalone Edge client binary (`iotp-edge`) is missing.
+### Stage 9 — Edge Fleet, Runtime & Store-and-Forward
+- **Spec:** Cloud Edge Hub, 3-tier priority lanes, sync protocol, standalone edge Go runtime binary with store-and-forward queue.
+- **Reality:** ✅ **100% Implemented.** Durable PostgreSQL persistence for Edge Nodes (`edge`), Device Assignments (`edge_device_assignment`), and Sync Journal (`edge_sync_journal`) with RLS. Cloud Edge Hub service (`internal/edge`) with 3-tier priority lanes (L0: Alarms, L1: Telemetry, L2: Logs), sequence tracking, deduplication cursor, configuration resolver, and remote command dispatch (`REBOOT`, `FORCE_SYNC`). Standalone autonomous Edge Runtime binary (`cmd/iotp-edge`, `iotp-edge.exe`) with local multi-lane store-and-forward queue, offline buffering, and automatic catchup sync. Modernized Web Console UI (`EdgeView.tsx`, `EdgeView.css`) with Fleet overview, registration wizard, device assignment drawer, sync journal modal, and catch-up simulation.
 
 ### Stage 10 — Industrial SCADA, Tags & HMI
 - **Spec:** Industrial process tag server, OPC quality flags, deadband delta suppression, ISA-18.2 alarm machine, Select-Before-Operate (SBO) safe control.
@@ -127,7 +127,7 @@ pie title 26 Services Implementation Breakdown
 
 `03-data-model.md` defines 24 entity tables. `db/migrations/00001_init_schema.sql` only contains 10 tables:
 
-### Existing Tables in PostgreSQL (Migrations 00001 - 00006):
+### Existing Tables in PostgreSQL (Migrations 00001 - 00007):
 1. `tenant_profile`
 2. `tenant`
 3. `users`
@@ -143,6 +143,7 @@ pie title 26 Services Implementation Breakdown
 13. `dashboard` (Stage 6)
 14. `rpc`, `ota_package`, `ota_assignment`, `device_ota_state` (Stage 7)
 15. `converter`, `integration`, `integration_status`, `integration_checkpoint` (Stage 8)
+16. `edge`, `edge_device_assignment`, `edge_sync_journal` (Stage 9)
 
 ### Remaining Spec Entities to Migrate:
 1. `customer` — Sub-tenant customer hierarchy
@@ -150,9 +151,8 @@ pie title 26 Services Implementation Breakdown
 3. `asset_profile` & `asset` — Physical asset entities
 4. `entity_views` — Filtered subset views
 5. `attribute_kv` — Scoped client/server/shared attributes table
-6. `edge` & `edge_event` — Edge node registry & outbox journal (Stage 9)
-7. `scada_tag` — Industrial SCADA tags & deadband configs (Stage 10)
-8. `audit_log` — Tamper-evident audit journal
+6. `scada_tag` — Industrial SCADA tags & deadband configs (Stage 10)
+7. `audit_log` — Tamper-evident audit journal
 
 ---
 

@@ -480,6 +480,45 @@ class ApiClient {
     return Array.isArray(res) ? res : [];
   }
 
+  async createEdgeNode(node: Partial<EdgeNode>): Promise<EdgeNode> {
+    return this.request<EdgeNode>('/edge', {
+      method: 'POST',
+      body: JSON.stringify(node),
+    });
+  }
+
+  async deleteEdgeNode(id: string): Promise<void> {
+    await this.request<void>(`/edge/${id}`, { method: 'DELETE' });
+  }
+
+  async assignEdgeDevices(edgeId: string, deviceIds: string[]): Promise<any> {
+    return this.request(`/edge/${edgeId}/assignments`, {
+      method: 'POST',
+      body: JSON.stringify({ device_ids: deviceIds }),
+    });
+  }
+
+  async unassignEdgeDevice(edgeId: string, deviceId: string): Promise<void> {
+    await this.request<void>(`/edge/${edgeId}/assignments/${deviceId}`, { method: 'DELETE' });
+  }
+
+  async getEdgeAssignments(edgeId: string): Promise<string[]> {
+    const res = await this.request<string[]>(`/edge/${edgeId}/assignments`);
+    return Array.isArray(res) ? res : [];
+  }
+
+  async executeEdgeCommand(edgeId: string, command: string, params?: Record<string, any>): Promise<any> {
+    return this.request(`/edge/${edgeId}/commands`, {
+      method: 'POST',
+      body: JSON.stringify({ command, params }),
+    });
+  }
+
+  async getEdgeJournal(edgeId: string, limit = 20): Promise<SyncJournalEntry[]> {
+    const res = await this.request<SyncJournalEntry[]>(`/edge/${edgeId}/journal?limit=${limit}`);
+    return Array.isArray(res) ? res : [];
+  }
+
   async triggerEdgeSync(batch: any): Promise<any> {
     const res = await fetch(`${BASE_URL}/edge/sync`, {
       method: 'POST',
@@ -812,11 +851,27 @@ export interface EdgeNode {
   tenant_id: string;
   name: string;
   edge_key: string;
+  edge_secret?: string;
   status: 'ONLINE' | 'OFFLINE' | 'SYNCING';
   firmware_version: string;
   hardware_model: string;
   last_sync_ts: number;
   backlog_count: number;
+  assigned_devices?: string[];
+  downlink_seq?: number;
+  uplink_seq?: number;
+}
+
+export interface SyncJournalEntry {
+  id: string;
+  edge_id: string;
+  sequence: number;
+  lane_l0_count: number;
+  lane_l1_count: number;
+  lane_l2_count: number;
+  processed_items: number;
+  status: string;
+  synced_at: number;
 }
 
 export interface ScadaTag {

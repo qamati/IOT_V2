@@ -172,8 +172,10 @@ func (a *API) setupRoutes() {
 		r.Post("/integrations/webhook/{routingKey}", a.handleIntegrationWebhook)
 		r.Post("/integrations/{routingKey}/webhook", a.handleIntegrationWebhook)
 
-		// Public Edge Node Store-and-Forward Sync Endpoint
+		// Public Edge Node Store-and-Forward & Synchronization Endpoints
 		r.Post("/edge/sync", a.handleEdgeSync)
+		r.Post("/edge/heartbeat", a.handleEdgeHeartbeat)
+		r.Get("/edge/configuration", a.handleGetEdgeConfiguration)
 
 		// Device wire-compatible HTTP endpoints:
 		// 1. Telemetry upload: POST /api/v1/{token}/telemetry
@@ -291,6 +293,11 @@ func (a *API) setupRoutes() {
 			protected.Post("/edge", a.handleCreateEdgeNode)
 			protected.Get("/edge/{id}", a.handleGetEdgeNode)
 			protected.Delete("/edge/{id}", a.handleDeleteEdgeNode)
+			protected.Post("/edge/{id}/assignments", a.handleAssignEdgeDevices)
+			protected.Delete("/edge/{id}/assignments/{deviceId}", a.handleUnassignEdgeDevice)
+			protected.Get("/edge/{id}/assignments", a.handleGetEdgeAssignments)
+			protected.Post("/edge/{id}/commands", a.handleExecuteEdgeCommand)
+			protected.Get("/edge/{id}/journal", a.handleGetEdgeJournal)
 
 			// Stage 10: SCADA Tags, Process Alarms & SBO Control
 			protected.Get("/scada/tags", a.handleListScadaTags)

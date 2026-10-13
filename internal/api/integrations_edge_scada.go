@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
@@ -402,6 +403,165 @@ func (a *API) handleEdgeSync(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(ack)
+}
+
+func (a *API) handleAssignEdgeDevices(w http.ResponseWriter, r *http.Request) {
+	edgeID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid edge id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	var req edge.DeviceAssignmentReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("malformed JSON body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.edgeHub.AssignDevices(r.Context(), edgeID, req.DeviceIDs); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "assigned_count": len(req.DeviceIDs)})
+}
+
+func (a *API) handleUnassignEdgeDevice(w http.ResponseWriter, r *http.Request) {
+	edgeID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid edge id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	deviceID, err := ids.Parse(chi.URLParam(r, "deviceId"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid device id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.edgeHub.UnassignDevice(r.Context(), edgeID, deviceID); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) handleGetEdgeAssignments(w http.ResponseWriter, r *http.Request) {
+	edgeID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid edge id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	devs, err := a.edgeHub.GetAssignedDevices(r.Context(), edgeID)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	if devs == nil {
+		devs = []ids.ID{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(devs)
+}
+
+func (a *API) handleExecuteEdgeCommand(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	edgeID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid edge id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	var req edge.RemoteCommandReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("malformed JSON body"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	resp, err := a.edgeHub.ExecuteRemoteCommand(r.Context(), tenantID, edgeID, &req)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+func (a *API) handleGetEdgeJournal(w http.ResponseWriter, r *http.Request) {
+	claims, ok := identity.UserFromContext(r.Context())
+	if !ok || claims.TenantID == "" {
+		errs.WriteHTTP(w, errs.Forbidden("tenant context required"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	tenantID, _ := ids.Parse(claims.TenantID)
+
+	edgeID, err := ids.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		errs.WriteHTTP(w, errs.InvalidArgument("invalid edge id"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	limit := 20
+	journal, err := a.edgeHub.GetSyncJournal(r.Context(), tenantID, edgeID, limit)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+	if journal == nil {
+		journal = []*edge.SyncJournalEntry{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(journal)
+}
+
+func (a *API) handleEdgeHeartbeat(w http.ResponseWriter, r *http.Request) {
+	edgeKey := r.Header.Get("X-Edge-Key")
+	if edgeKey == "" {
+		edgeKey = r.URL.Query().Get("key")
+	}
+	if edgeKey == "" {
+		errs.WriteHTTP(w, errs.InvalidArgument("missing X-Edge-Key header or key parameter"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	if err := a.edgeHub.Heartbeat(r.Context(), edgeKey); err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"status": "OK", "server_time": time.Now().UnixMilli()})
+}
+
+func (a *API) handleGetEdgeConfiguration(w http.ResponseWriter, r *http.Request) {
+	edgeKey := r.Header.Get("X-Edge-Key")
+	if edgeKey == "" {
+		edgeKey = r.URL.Query().Get("key")
+	}
+	if edgeKey == "" {
+		errs.WriteHTTP(w, errs.InvalidArgument("missing X-Edge-Key header or key parameter"), middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	cfg, err := a.edgeHub.GetConfiguration(r.Context(), edgeKey)
+	if err != nil {
+		errs.WriteHTTP(w, err, middleware.GetReqID(r.Context()), r.URL.Path)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(cfg)
 }
 
 // ==========================================
