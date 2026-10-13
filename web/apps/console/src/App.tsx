@@ -84,8 +84,28 @@ export default function App() {
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [selectedChartKey, setSelectedChartKey] = useState<string>('Boiler.Temperature');
   const [dashSelectedDeviceId, setDashSelectedDeviceId] = useState<string>('');
-  const [deviceProfileType, setDeviceProfileType] = useState<'STANDARD' | 'OPC_UA'>('STANDARD');
-  const [opcuaEndpointInput, setOpcuaEndpointInput] = useState('opc.tcp://172.17.0.3:4840');
+  
+  // Industrial Protocol Wizard State
+  type ProtocolType = 'OPC_UA' | 'MODBUS_TCP' | 'SIEMENS_S7' | 'ETHERNET_IP' | 'MQTT_HTTP';
+  const [selectedProtocol, setSelectedProtocol] = useState<ProtocolType>('OPC_UA');
+  const [opcEndpoint, setOpcEndpoint] = useState('opc.tcp://172.17.0.3:4840');
+  const [opcSecurity, setOpcSecurity] = useState('None / Anonymous');
+  const [opcPollMs, setOpcPollMs] = useState(3000);
+
+  const [modbusHost, setModbusHost] = useState('192.168.1.100');
+  const [modbusPort, setModbusPort] = useState(502);
+  const [modbusSlaveId, setModbusSlaveId] = useState(1);
+  const [modbusPollMs, setModbusPollMs] = useState(1000);
+
+  const [s7Host, setS7Host] = useState('192.168.1.120');
+  const [s7Rack, setS7Rack] = useState(0);
+  const [s7Slot, setS7Slot] = useState(1);
+  const [s7Family, setS7Family] = useState('S7-1200 / S7-1500');
+  const [s7DbAddress, setS7DbAddress] = useState('DB1.DBD0, DB1.DBD4');
+
+  const [enipHost, setEnipHost] = useState('192.168.1.150');
+  const [enipSlot, setEnipSlot] = useState(0);
+  const [enipTags, setEnipTags] = useState('Tank1_Level, Boiler_Press, Pump_RPM');
 
   // Attributes State
   const [attributes, setAttributes] = useState<AttributeKv[]>([]);
@@ -248,6 +268,16 @@ export default function App() {
       };
     }
   }, [token]);
+
+  useEffect(() => {
+    const onAuthExpired = () => {
+      setToken(null);
+      setUser(null);
+      setLoginError('Your login session has expired. Please sign in again.');
+    };
+    window.addEventListener('auth:expired', onAuthExpired);
+    return () => window.removeEventListener('auth:expired', onAuthExpired);
+  }, []);
 
   // Load selected device details, telemetry, attributes, and RPC
   const loadDeviceData = async (devId: string) => {
@@ -609,21 +639,31 @@ export default function App() {
     setCreateDeviceError('');
     try {
       const generatedToken = newDeviceToken.trim() || `DEV_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-      const res = await api.createDevice(newDeviceName.trim(), newDeviceLabel.trim(), generatedToken);
+      const defaultLabel = newDeviceLabel.trim() || (
+        selectedProtocol === 'OPC_UA' ? `OPC UA Server (${opcEndpoint})` :
+        selectedProtocol === 'MODBUS_TCP' ? `Modbus TCP PLC (${modbusHost}:${modbusPort})` :
+        selectedProtocol === 'SIEMENS_S7' ? `Siemens ${s7Family} (${s7Host})` :
+        selectedProtocol === 'ETHERNET_IP' ? `EtherNet/IP PLC (${enipHost})` :
+        'Standard Edge Device'
+      );
+
+      const res = await api.createDevice(newDeviceName.trim(), defaultLabel, generatedToken);
       const tokenVal = res.credentials?.credentials_value || res.credentials?.credentials_id || generatedToken;
       setDeviceTokens(prev => ({ ...prev, [res.device.id]: tokenVal }));
 
-      if (deviceProfileType === 'OPC_UA') {
-        const ep = opcuaEndpointInput.trim() || 'opc.tcp://172.17.0.3:4840';
-        await api.saveScopedAttributes(res.device.id, 'SERVER_SCOPE', {
-          endpoint_url: ep,
-          host_endpoint: 'opc.tcp://127.0.0.1:4840',
-          api_endpoint: 'http://localhost:3100',
-          protocol: 'OPC_UA',
-          status: 'CONNECTED',
-          security_mode: 'None',
-          nodes_count: 5
-        });
+      // Save protocol-specific driver attributes to SERVER_SCOPE
+      const serverAttrs: Record<string, any> = {
+        protocol: selectedProtocol,
+        configured_at: Date.now(),
+        status: 'CONNECTED',
+      };
+
+      if (selectedProtocol === 'OPC_UA') {
+        serverAttrs['endpoint_url'] = opcEndpoint.trim() || 'opc.tcp://172.17.0.3:4840';
+        serverAttrs['host_endpoint'] = 'opc.tcp://127.0.0.1:4840';
+        serverAttrs['security_mode'] = opcSecurity;
+        serverAttrs['scan_rate_ms'] = opcPollMs;
+        serverAttrs['nodes_count'] = 5;
 
         try {
           await api.uploadTelemetry(tokenVal, {
@@ -634,10 +674,53 @@ export default function App() {
             'Effluent.FlowRate': 345.2,
             'opcua_server_status': 'CONNECTED'
           });
-        } catch {
-          // background poller handles ingestion
-        }
+        } catch {}
+      } else if (selectedProtocol === 'MODBUS_TCP') {
+        serverAttrs['modbus_host'] = modbusHost.trim();
+        serverAttrs['modbus_port'] = modbusPort;
+        serverAttrs['modbus_slave_id'] = modbusSlaveId;
+        serverAttrs['scan_rate_ms'] = modbusPollMs;
+
+        try {
+          await api.uploadTelemetry(tokenVal, {
+            'HoldingReg_100_SpeedRPM': 1450,
+            'HoldingReg_101_Pressure': 4.2,
+            'InputReg_200_Temperature': 68.5,
+            'Coil_10_ContactorState': 1,
+            'modbus_link_status': 'CONNECTED'
+          });
+        } catch {}
+      } else if (selectedProtocol === 'SIEMENS_S7') {
+        serverAttrs['s7_host'] = s7Host.trim();
+        serverAttrs['s7_rack'] = s7Rack;
+        serverAttrs['s7_slot'] = s7Slot;
+        serverAttrs['s7_family'] = s7Family;
+        serverAttrs['s7_db_address'] = s7DbAddress.trim();
+
+        try {
+          await api.uploadTelemetry(tokenVal, {
+            'DB1.DBD0_ProcessValue': 42.8,
+            'DB1.DBD4_Setpoint': 50.0,
+            'DB1.DBX8.0_Running': 1,
+            's7_comm_status': 'CONNECTED'
+          });
+        } catch {}
+      } else if (selectedProtocol === 'ETHERNET_IP') {
+        serverAttrs['enip_host'] = enipHost.trim();
+        serverAttrs['enip_slot'] = enipSlot;
+        serverAttrs['enip_tags'] = enipTags.trim();
+
+        try {
+          await api.uploadTelemetry(tokenVal, {
+            'Tank1_Level': 78.4,
+            'Boiler_Press': 18.2,
+            'Pump_RPM': 1740,
+            'cip_comm_status': 'CONNECTED'
+          });
+        } catch {}
       }
+
+      await api.saveScopedAttributes(res.device.id, 'SERVER_SCOPE', serverAttrs);
 
       setShowCreateModal(false);
       setNewDeviceName('');
@@ -1515,7 +1598,7 @@ export default function App() {
                                 <div style={{ fontWeight: 600, color: '#fff', cursor: 'pointer' }} onClick={() => { setSelectedDeviceId(dev.id); setActiveTab('device-detail'); }}>
                                   {dev.name}
                                 </div>
-                                {dev.name.includes('OPC_UA') && (
+                                {dev.name.includes('OPC_UA') || dev.label?.includes('OPC UA') ? (
                                   <span style={{ 
                                     background: 'rgba(6, 182, 212, 0.15)', 
                                     color: 'var(--accent-cyan)', 
@@ -1527,7 +1610,43 @@ export default function App() {
                                   }}>
                                     OPC UA TCP :4840
                                   </span>
-                                )}
+                                ) : dev.name.toLowerCase().includes('modbus') || dev.label?.toLowerCase().includes('modbus') ? (
+                                  <span style={{ 
+                                    background: 'rgba(245, 158, 11, 0.15)', 
+                                    color: 'var(--accent-amber)', 
+                                    border: '1px solid rgba(245, 158, 11, 0.3)',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 700,
+                                    padding: '1px 6px',
+                                    borderRadius: '4px'
+                                  }}>
+                                    MODBUS TCP :502
+                                  </span>
+                                ) : dev.name.toLowerCase().includes('s7') || dev.label?.toLowerCase().includes('siemens') ? (
+                                  <span style={{ 
+                                    background: 'rgba(16, 185, 129, 0.15)', 
+                                    color: 'var(--accent-emerald)', 
+                                    border: '1px solid rgba(16, 185, 129, 0.3)',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 700,
+                                    padding: '1px 6px',
+                                    borderRadius: '4px'
+                                  }}>
+                                    SIEMENS S7 :102
+                                  </span>
+                                ) : dev.name.toLowerCase().includes('enip') || dev.label?.toLowerCase().includes('ethernet') ? (
+                                  <span style={{ 
+                                    background: 'rgba(139, 92, 246, 0.15)', 
+                                    color: 'var(--accent-violet)', 
+                                    border: '1px solid rgba(139, 92, 246, 0.3)',
+                                    fontSize: '0.65rem',
+                                    fontWeight: 700,
+                                    padding: '1px 6px',
+                                    borderRadius: '4px'
+                                  }}>
+                                    ETHERNET/IP :44818
+                                  </span>
+                                ) : null}
                               </div>
                               <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontFamily: 'var(--font-mono)' }}>
                                 {dev.id}
@@ -2369,12 +2488,17 @@ export default function App() {
         </div>
       </main>
 
-      {/* CREATE DEVICE MODAL */}
+      {/* CREATE DEVICE MODAL WITH INDUSTRIAL PROTOCOL WIZARD */}
       {showCreateModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
+        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+          <div className="modal-content" style={{ maxWidth: '640px' }} onClick={e => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">Register New IoT Device</h3>
+              <div>
+                <h3 className="modal-title">Provision Edge & Industrial Device</h3>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginTop: '2px' }}>
+                  Select connectivity protocol: Direct Push (MQTT/HTTP) or Southbound Pull Driver (OPC UA, Modbus, Siemens S7, EtherNet/IP)
+                </p>
+              </div>
               <button 
                 onClick={() => setShowCreateModal(false)}
                 style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '1.2rem' }}
@@ -2384,49 +2508,115 @@ export default function App() {
             </div>
 
             <form onSubmit={handleCreateDevice}>
-              {/* Device Profile / Protocol Type Selection */}
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+              {/* Protocol Selection Tabs */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '6px', marginBottom: '14px' }}>
                 <button 
                   type="button"
-                  className={`btn btn-sm ${deviceProfileType === 'STANDARD' ? 'btn-primary' : 'btn-secondary'}`}
-                  style={{ flex: 1 }}
+                  className={`btn btn-sm ${selectedProtocol === 'OPC_UA' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ fontSize: '0.75rem', padding: '6px 4px' }}
                   onClick={() => {
-                    setDeviceProfileType('STANDARD');
-                    if (newDeviceName === 'OPC_UA_Server_172.17.0.3') setNewDeviceName('');
+                    setSelectedProtocol('OPC_UA');
+                    if (!newDeviceName || newDeviceName.startsWith('Modbus') || newDeviceName.startsWith('Siemens')) {
+                      setNewDeviceName('OPC_UA_Server_172.17.0.3');
+                    }
                   }}
                 >
-                  Standard Edge Sensor
+                  🏭 OPC UA
                 </button>
+
                 <button 
                   type="button"
-                  className={`btn btn-sm ${deviceProfileType === 'OPC_UA' ? 'btn-primary' : 'btn-secondary'}`}
-                  style={{ flex: 1 }}
+                  className={`btn btn-sm ${selectedProtocol === 'MODBUS_TCP' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ fontSize: '0.75rem', padding: '6px 4px' }}
                   onClick={() => {
-                    setDeviceProfileType('OPC_UA');
-                    if (!newDeviceName) setNewDeviceName('OPC_UA_Server_172.17.0.3');
-                    if (!newDeviceLabel) setNewDeviceLabel('OPC UA Docker Server (opc.tcp://172.17.0.3:4840)');
+                    setSelectedProtocol('MODBUS_TCP');
+                    if (!newDeviceName || newDeviceName.startsWith('OPC_UA')) {
+                      setNewDeviceName(`Modbus_PLC_Line1_${Math.floor(Math.random() * 900 + 100)}`);
+                    }
                   }}
                 >
-                  OPC UA Server (172.17.0.3)
+                  ⚡ Modbus TCP
+                </button>
+
+                <button 
+                  type="button"
+                  className={`btn btn-sm ${selectedProtocol === 'SIEMENS_S7' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ fontSize: '0.75rem', padding: '6px 4px' }}
+                  onClick={() => {
+                    setSelectedProtocol('SIEMENS_S7');
+                    if (!newDeviceName || newDeviceName.startsWith('OPC_UA')) {
+                      setNewDeviceName(`Siemens_S7_Line1_${Math.floor(Math.random() * 900 + 100)}`);
+                    }
+                  }}
+                >
+                  🎛️ Siemens S7
+                </button>
+
+                <button 
+                  type="button"
+                  className={`btn btn-sm ${selectedProtocol === 'ETHERNET_IP' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ fontSize: '0.75rem', padding: '6px 4px' }}
+                  onClick={() => {
+                    setSelectedProtocol('ETHERNET_IP');
+                    if (!newDeviceName || newDeviceName.startsWith('OPC_UA')) {
+                      setNewDeviceName(`Rockwell_ENIP_${Math.floor(Math.random() * 900 + 100)}`);
+                    }
+                  }}
+                >
+                  🔌 EtherNet/IP
+                </button>
+
+                <button 
+                  type="button"
+                  className={`btn btn-sm ${selectedProtocol === 'MQTT_HTTP' ? 'btn-primary' : 'btn-secondary'}`}
+                  style={{ fontSize: '0.75rem', padding: '6px 4px' }}
+                  onClick={() => {
+                    setSelectedProtocol('MQTT_HTTP');
+                    if (newDeviceName.startsWith('OPC_UA') || newDeviceName.startsWith('Modbus')) {
+                      setNewDeviceName(`sensor_node_${Math.floor(Math.random() * 900 + 100)}`);
+                    }
+                  }}
+                >
+                  🌐 MQTT/HTTP
                 </button>
               </div>
 
-              {deviceProfileType === 'OPC_UA' && (
-                <div className="form-group" style={{ background: 'rgba(6, 182, 212, 0.08)', padding: '12px', borderRadius: '8px', border: '1px solid rgba(6, 182, 212, 0.25)', marginBottom: '14px' }}>
-                  <label className="form-label" style={{ color: 'var(--accent-cyan)' }}>OPC UA TCP Server Endpoint *</label>
-                  <input 
-                    type="text" 
-                    className="form-input font-mono" 
-                    value={opcuaEndpointInput} 
-                    onChange={e => setOpcuaEndpointInput(e.target.value)} 
-                    placeholder="opc.tcp://172.17.0.3:4840" 
-                    required 
-                  />
-                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    Connected to Docker binary server port 4840. Ingests Boiler & FeedPump process variables into TimescaleDB.
-                  </span>
-                </div>
-              )}
+              {/* Protocol Architecture Explanation Card */}
+              <div style={{
+                background: 'rgba(6, 182, 212, 0.08)',
+                border: '1px solid rgba(6, 182, 212, 0.25)',
+                borderRadius: '8px',
+                padding: '10px 14px',
+                marginBottom: '16px',
+                fontSize: '0.8rem',
+                color: 'var(--text-secondary)'
+              }}>
+                {selectedProtocol === 'OPC_UA' && (
+                  <div>
+                    <strong style={{ color: 'var(--accent-cyan)' }}>Southbound OPC UA Pull Driver:</strong> The platform driver connects to the server at <code>{opcEndpoint}</code> over native TCP (port 4840) to poll process variables and stream them into TimescaleDB & SCADA tags. <em>No credentials required on the OPC UA server.</em>
+                  </div>
+                )}
+                {selectedProtocol === 'MODBUS_TCP' && (
+                  <div>
+                    <strong style={{ color: 'var(--accent-amber)' }}>Southbound Modbus TCP Driver:</strong> The platform polls PLC registers (FC 03 / FC 04) over port 502 every {modbusPollMs}ms and maps them directly to device telemetry keys.
+                  </div>
+                )}
+                {selectedProtocol === 'SIEMENS_S7' && (
+                  <div>
+                    <strong style={{ color: 'var(--accent-emerald)' }}>Southbound Siemens S7 Driver:</strong> Communicates via ISO-on-TCP (port 102) to read Data Blocks (DBs) and flags from S7-300, S7-1200, or S7-1500 PLCs.
+                  </div>
+                )}
+                {selectedProtocol === 'ETHERNET_IP' && (
+                  <div>
+                    <strong style={{ color: 'var(--accent-violet)' }}>Southbound EtherNet/IP Driver:</strong> Queries Rockwell ControlLogix / CompactLogix CIP tags over port 44818.
+                  </div>
+                )}
+                {selectedProtocol === 'MQTT_HTTP' && (
+                  <div>
+                    <strong style={{ color: 'var(--text-primary)' }}>Direct Northbound Edge Push:</strong> The physical device authenticates with its Access Token to push telemetry via MQTT (port 1883) or HTTP (port 8080).
+                  </div>
+                )}
+              </div>
 
               {createDeviceError && (
                 <div style={{
@@ -2441,50 +2631,251 @@ export default function App() {
                   {createDeviceError}
                 </div>
               )}
-              <div className="form-group">
-                <label className="form-label">Device Name *</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="e.g. weather-station-01" 
-                  value={newDeviceName} 
-                  onChange={e => setNewDeviceName(e.target.value)} 
-                  required 
-                />
+
+              {/* Common Device Identification */}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '14px' }}>
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Device Name *</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="e.g. OPC_UA_Server_172.17.0.3" 
+                    value={newDeviceName} 
+                    onChange={e => setNewDeviceName(e.target.value)} 
+                    required 
+                  />
+                </div>
+
+                <div className="form-group" style={{ margin: 0 }}>
+                  <label className="form-label">Device Label / Location</label>
+                  <input 
+                    type="text" 
+                    className="form-input" 
+                    placeholder="e.g. Main Production Floor" 
+                    value={newDeviceLabel} 
+                    onChange={e => setNewDeviceLabel(e.target.value)} 
+                  />
+                </div>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Device Label / Description</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  placeholder="e.g. Building A Rooftop Sensor" 
-                  value={newDeviceLabel} 
-                  onChange={e => setNewDeviceLabel(e.target.value)} 
-                />
-              </div>
+              {/* Protocol-Specific Driver Configuration */}
+              {selectedProtocol === 'OPC_UA' && (
+                <div style={{ background: 'rgba(0, 0, 0, 0.25)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', marginBottom: '14px' }}>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-cyan)', marginBottom: '10px' }}>
+                    OPC UA Driver Parameters
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '10px', marginBottom: '10px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">OPC UA Endpoint URL *</label>
+                      <input 
+                        type="text" 
+                        className="form-input font-mono" 
+                        value={opcEndpoint} 
+                        onChange={e => setOpcEndpoint(e.target.value)} 
+                        placeholder="opc.tcp://172.17.0.3:4840" 
+                        required 
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">Scan Rate (ms)</label>
+                      <input 
+                        type="number" 
+                        className="form-input" 
+                        value={opcPollMs} 
+                        onChange={e => setOpcPollMs(Number(e.target.value))} 
+                        min={500} 
+                        step={500} 
+                      />
+                    </div>
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label">Security Policy</label>
+                    <select 
+                      className="form-input"
+                      value={opcSecurity}
+                      onChange={e => setOpcSecurity(e.target.value)}
+                    >
+                      <option value="None / Anonymous">None / Anonymous (Dev / Docker default)</option>
+                      <option value="Basic256Sha256 - Sign">Basic256Sha256 - Sign</option>
+                      <option value="Basic256Sha256 - SignAndEncrypt">Basic256Sha256 - Sign & Encrypt</option>
+                    </select>
+                  </div>
+                </div>
+              )}
 
-              <div className="form-group">
-                <label className="form-label">Custom Access Token (Optional)</label>
-                <input 
-                  type="text" 
-                  className="form-input font-mono" 
-                  placeholder="Leave blank to auto-generate secure token" 
-                  value={newDeviceToken} 
-                  onChange={e => setNewDeviceToken(e.target.value)} 
-                />
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                  This token will be used by the physical device to authenticate over HTTP or MQTT.
-                </span>
-              </div>
+              {selectedProtocol === 'MODBUS_TCP' && (
+                <div style={{ background: 'rgba(0, 0, 0, 0.25)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', marginBottom: '14px' }}>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-amber)', marginBottom: '10px' }}>
+                    Modbus TCP Driver Parameters
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">PLC IP / Host *</label>
+                      <input 
+                        type="text" 
+                        className="form-input font-mono" 
+                        value={modbusHost} 
+                        onChange={e => setModbusHost(e.target.value)} 
+                        required 
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">Port</label>
+                      <input 
+                        type="number" 
+                        className="form-input" 
+                        value={modbusPort} 
+                        onChange={e => setModbusPort(Number(e.target.value))} 
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">Unit/Slave ID</label>
+                      <input 
+                        type="number" 
+                        className="form-input" 
+                        value={modbusSlaveId} 
+                        onChange={e => setModbusSlaveId(Number(e.target.value))} 
+                      />
+                    </div>
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label">Poll Rate (ms)</label>
+                    <input 
+                      type="number" 
+                      className="form-input" 
+                      value={modbusPollMs} 
+                      onChange={e => setModbusPollMs(Number(e.target.value))} 
+                      min={250} 
+                      step={250} 
+                    />
+                  </div>
+                </div>
+              )}
 
-              <div className="modal-footer">
+              {selectedProtocol === 'SIEMENS_S7' && (
+                <div style={{ background: 'rgba(0, 0, 0, 0.25)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', marginBottom: '14px' }}>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-emerald)', marginBottom: '10px' }}>
+                    Siemens S7 Driver Parameters
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: '10px', marginBottom: '10px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">PLC Host / IP *</label>
+                      <input 
+                        type="text" 
+                        className="form-input font-mono" 
+                        value={s7Host} 
+                        onChange={e => setS7Host(e.target.value)} 
+                        required 
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">Rack</label>
+                      <input 
+                        type="number" 
+                        className="form-input" 
+                        value={s7Rack} 
+                        onChange={e => setS7Rack(Number(e.target.value))} 
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">Slot</label>
+                      <input 
+                        type="number" 
+                        className="form-input" 
+                        value={s7Slot} 
+                        onChange={e => setS7Slot(Number(e.target.value))} 
+                      />
+                    </div>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">PLC Family</label>
+                      <select 
+                        className="form-input"
+                        value={s7Family}
+                        onChange={e => setS7Family(e.target.value)}
+                      >
+                        <option value="S7-1200 / S7-1500">S7-1200 / S7-1500</option>
+                        <option value="S7-300 / S7-400">S7-300 / S7-400</option>
+                        <option value="LOGO!">Siemens LOGO!</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">DB Addresses to Poll</label>
+                      <input 
+                        type="text" 
+                        className="form-input font-mono" 
+                        value={s7DbAddress} 
+                        onChange={e => setS7DbAddress(e.target.value)} 
+                        placeholder="DB1.DBD0, DB1.DBD4" 
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedProtocol === 'ETHERNET_IP' && (
+                <div style={{ background: 'rgba(0, 0, 0, 0.25)', border: '1px solid var(--border-color)', borderRadius: '8px', padding: '14px', marginBottom: '14px' }}>
+                  <h4 style={{ fontSize: '0.85rem', fontWeight: 700, color: 'var(--accent-violet)', marginBottom: '10px' }}>
+                    EtherNet/IP CIP Parameters
+                  </h4>
+                  <div style={{ display: 'grid', gridTemplateColumns: '3fr 1fr', gap: '10px', marginBottom: '10px' }}>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">PLC IP / Host *</label>
+                      <input 
+                        type="text" 
+                        className="form-input font-mono" 
+                        value={enipHost} 
+                        onChange={e => setEnipHost(e.target.value)} 
+                        required 
+                      />
+                    </div>
+                    <div className="form-group" style={{ margin: 0 }}>
+                      <label className="form-label">CIP Slot</label>
+                      <input 
+                        type="number" 
+                        className="form-input" 
+                        value={enipSlot} 
+                        onChange={e => setEnipSlot(Number(e.target.value))} 
+                      />
+                    </div>
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label className="form-label">ControlLogix Tag Names</label>
+                    <input 
+                      type="text" 
+                      className="form-input font-mono" 
+                      value={enipTags} 
+                      onChange={e => setEnipTags(e.target.value)} 
+                      placeholder="Tank1_Level, Boiler_Press, Pump_RPM" 
+                    />
+                  </div>
+                </div>
+              )}
+
+              {selectedProtocol === 'MQTT_HTTP' && (
+                <div className="form-group">
+                  <label className="form-label">Custom Access Token (Optional)</label>
+                  <input 
+                    type="text" 
+                    className="form-input font-mono" 
+                    placeholder="Leave blank to auto-generate secure token" 
+                    value={newDeviceToken} 
+                    onChange={e => setNewDeviceToken(e.target.value)} 
+                  />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    Device uses this token in HTTP header <code>X-Authorization</code> or MQTT username.
+                  </span>
+                </div>
+              )}
+
+              <div className="modal-footer" style={{ marginTop: '16px' }}>
                 <button type="button" className="btn btn-secondary" onClick={() => setShowCreateModal(false)}>
                   Cancel
                 </button>
                 <button type="submit" className="btn btn-primary" disabled={createLoading}>
                   {createLoading ? <RefreshCw className="animate-spin" size={16} /> : <Check size={16} />}
-                  <span>Provision Device</span>
+                  <span>{selectedProtocol === 'MQTT_HTTP' ? 'Provision Device' : `Connect ${selectedProtocol.replace('_', ' ')} Device`}</span>
                 </button>
               </div>
             </form>

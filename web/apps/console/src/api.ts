@@ -131,6 +131,11 @@ class ApiClient {
     });
 
     if (!res.ok) {
+      if (res.status === 401 && !path.includes('/auth/login')) {
+        this.setToken(null);
+        localStorage.removeItem('iotp_user');
+        window.dispatchEvent(new CustomEvent('auth:expired'));
+      }
       let errText = await res.text();
       try {
         const errJson = JSON.parse(errText);

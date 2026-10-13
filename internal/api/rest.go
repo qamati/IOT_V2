@@ -342,7 +342,7 @@ func (a *API) authMiddleware(next http.Handler) http.Handler {
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 		claims, err := a.identity.ValidateAccessToken(token)
 		if err != nil {
-			errs.WriteHTTP(w, errs.Unauthorized("invalid access token"), middleware.GetReqID(r.Context()), r.URL.Path)
+			errs.WriteHTTP(w, errs.Unauthorized("User login session expired or invalid. Please sign in again."), middleware.GetReqID(r.Context()), r.URL.Path)
 			return
 		}
 
