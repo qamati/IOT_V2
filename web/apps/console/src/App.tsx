@@ -638,18 +638,34 @@ export default function App() {
     setCreateLoading(true);
     setCreateDeviceError('');
     try {
-      const generatedToken = newDeviceToken.trim() || `DEV_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
-      const defaultLabel = newDeviceLabel.trim() || (
-        selectedProtocol === 'OPC_UA' ? `OPC UA Server (${opcEndpoint})` :
-        selectedProtocol === 'MODBUS_TCP' ? `Modbus TCP PLC (${modbusHost}:${modbusPort})` :
-        selectedProtocol === 'SIEMENS_S7' ? `Siemens ${s7Family} (${s7Host})` :
-        selectedProtocol === 'ETHERNET_IP' ? `EtherNet/IP PLC (${enipHost})` :
-        'Standard Edge Device'
-      );
+      const trimmedName = newDeviceName.trim();
+      const existingDev = devices.find(d => d.name.toLowerCase() === trimmedName.toLowerCase());
 
-      const res = await api.createDevice(newDeviceName.trim(), defaultLabel, generatedToken);
-      const tokenVal = res.credentials?.credentials_value || res.credentials?.credentials_id || generatedToken;
-      setDeviceTokens(prev => ({ ...prev, [res.device.id]: tokenVal }));
+      let targetDeviceId = '';
+      let targetDev: Device;
+      let tokenVal = '';
+
+      if (existingDev) {
+        // Device already registered! Connect/Update its industrial driver parameters and load studio
+        targetDeviceId = existingDev.id;
+        targetDev = existingDev;
+        tokenVal = deviceTokens[existingDev.id] || '';
+      } else {
+        const generatedToken = newDeviceToken.trim() || `DEV_${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
+        const defaultLabel = newDeviceLabel.trim() || (
+          selectedProtocol === 'OPC_UA' ? `OPC UA Server (${opcEndpoint})` :
+          selectedProtocol === 'MODBUS_TCP' ? `Modbus TCP PLC (${modbusHost}:${modbusPort})` :
+          selectedProtocol === 'SIEMENS_S7' ? `Siemens ${s7Family} (${s7Host})` :
+          selectedProtocol === 'ETHERNET_IP' ? `EtherNet/IP PLC (${enipHost})` :
+          'Standard Edge Device'
+        );
+
+        const res = await api.createDevice(trimmedName, defaultLabel, generatedToken);
+        targetDeviceId = res.device.id;
+        targetDev = res.device;
+        tokenVal = res.credentials?.credentials_value || res.credentials?.credentials_id || generatedToken;
+        setDeviceTokens(prev => ({ ...prev, [targetDeviceId]: tokenVal }));
+      }
 
       // Save protocol-specific driver attributes to SERVER_SCOPE
       const serverAttrs: Record<string, any> = {
@@ -665,31 +681,35 @@ export default function App() {
         serverAttrs['scan_rate_ms'] = opcPollMs;
         serverAttrs['nodes_count'] = 5;
 
-        try {
-          await api.uploadTelemetry(tokenVal, {
-            'Boiler.Temperature': 82.5,
-            'Boiler.Pressure': 18.4,
-            'FeedPump.Status': 1,
-            'FeedPump.SpeedRPM': 1750,
-            'Effluent.FlowRate': 345.2,
-            'opcua_server_status': 'CONNECTED'
-          });
-        } catch {}
+        if (tokenVal) {
+          try {
+            await api.uploadTelemetry(tokenVal, {
+              'Boiler.Temperature': 82.5,
+              'Boiler.Pressure': 18.4,
+              'FeedPump.Status': 1,
+              'FeedPump.SpeedRPM': 1750,
+              'Effluent.FlowRate': 345.2,
+              'opcua_server_status': 'CONNECTED'
+            });
+          } catch {}
+        }
       } else if (selectedProtocol === 'MODBUS_TCP') {
         serverAttrs['modbus_host'] = modbusHost.trim();
         serverAttrs['modbus_port'] = modbusPort;
         serverAttrs['modbus_slave_id'] = modbusSlaveId;
         serverAttrs['scan_rate_ms'] = modbusPollMs;
 
-        try {
-          await api.uploadTelemetry(tokenVal, {
-            'HoldingReg_100_SpeedRPM': 1450,
-            'HoldingReg_101_Pressure': 4.2,
-            'InputReg_200_Temperature': 68.5,
-            'Coil_10_ContactorState': 1,
-            'modbus_link_status': 'CONNECTED'
-          });
-        } catch {}
+        if (tokenVal) {
+          try {
+            await api.uploadTelemetry(tokenVal, {
+              'HoldingReg_100_SpeedRPM': 1450,
+              'HoldingReg_101_Pressure': 4.2,
+              'InputReg_200_Temperature': 68.5,
+              'Coil_10_ContactorState': 1,
+              'modbus_link_status': 'CONNECTED'
+            });
+          } catch {}
+        }
       } else if (selectedProtocol === 'SIEMENS_S7') {
         serverAttrs['s7_host'] = s7Host.trim();
         serverAttrs['s7_rack'] = s7Rack;
@@ -697,30 +717,34 @@ export default function App() {
         serverAttrs['s7_family'] = s7Family;
         serverAttrs['s7_db_address'] = s7DbAddress.trim();
 
-        try {
-          await api.uploadTelemetry(tokenVal, {
-            'DB1.DBD0_ProcessValue': 42.8,
-            'DB1.DBD4_Setpoint': 50.0,
-            'DB1.DBX8.0_Running': 1,
-            's7_comm_status': 'CONNECTED'
-          });
-        } catch {}
+        if (tokenVal) {
+          try {
+            await api.uploadTelemetry(tokenVal, {
+              'DB1.DBD0_ProcessValue': 42.8,
+              'DB1.DBD4_Setpoint': 50.0,
+              'DB1.DBX8.0_Running': 1,
+              's7_comm_status': 'CONNECTED'
+            });
+          } catch {}
+        }
       } else if (selectedProtocol === 'ETHERNET_IP') {
         serverAttrs['enip_host'] = enipHost.trim();
         serverAttrs['enip_slot'] = enipSlot;
         serverAttrs['enip_tags'] = enipTags.trim();
 
-        try {
-          await api.uploadTelemetry(tokenVal, {
-            'Tank1_Level': 78.4,
-            'Boiler_Press': 18.2,
-            'Pump_RPM': 1740,
-            'cip_comm_status': 'CONNECTED'
-          });
-        } catch {}
+        if (tokenVal) {
+          try {
+            await api.uploadTelemetry(tokenVal, {
+              'Tank1_Level': 78.4,
+              'Boiler_Press': 18.2,
+              'Pump_RPM': 1740,
+              'cip_comm_status': 'CONNECTED'
+            });
+          } catch {}
+        }
       }
 
-      await api.saveScopedAttributes(res.device.id, 'SERVER_SCOPE', serverAttrs);
+      await api.saveScopedAttributes(targetDeviceId, 'SERVER_SCOPE', serverAttrs);
 
       setShowCreateModal(false);
       setNewDeviceName('');
@@ -728,11 +752,11 @@ export default function App() {
       setNewDeviceToken('');
       setCreateDeviceError('');
       await loadDevices();
-      setSelectedDeviceId(res.device.id);
-      setSelectedDevice(res.device);
+      setSelectedDeviceId(targetDeviceId);
+      setSelectedDevice(targetDev);
       setActiveTab('device-detail');
     } catch (err: any) {
-      setCreateDeviceError(err.message || 'Failed to create device');
+      setCreateDeviceError(err.message || 'Failed to connect device');
     } finally {
       setCreateLoading(false);
     }
@@ -2516,8 +2540,9 @@ export default function App() {
                   style={{ fontSize: '0.75rem', padding: '6px 4px' }}
                   onClick={() => {
                     setSelectedProtocol('OPC_UA');
-                    if (!newDeviceName || newDeviceName.startsWith('Modbus') || newDeviceName.startsWith('Siemens')) {
-                      setNewDeviceName('OPC_UA_Server_172.17.0.3');
+                    if (!newDeviceName || newDeviceName.startsWith('Modbus') || newDeviceName.startsWith('Siemens') || newDeviceName.startsWith('Rockwell') || newDeviceName.startsWith('sensor')) {
+                      const exists = devices.some(d => d.name === 'OPC_UA_Server_172.17.0.3');
+                      setNewDeviceName(exists ? `OPC_UA_Node_${Math.floor(Math.random() * 900 + 100)}` : 'OPC_UA_Server_172.17.0.3');
                     }
                   }}
                 >
@@ -2629,6 +2654,20 @@ export default function App() {
                   marginBottom: '14px'
                 }}>
                   {createDeviceError}
+                </div>
+              )}
+
+              {newDeviceName.trim() && devices.some(d => d.name.toLowerCase() === newDeviceName.trim().toLowerCase()) && (
+                <div style={{
+                  background: 'rgba(59, 130, 246, 0.12)',
+                  border: '1px solid rgba(59, 130, 246, 0.35)',
+                  color: 'var(--accent-blue)',
+                  padding: '10px 14px',
+                  borderRadius: 'var(--radius-md)',
+                  fontSize: '0.85rem',
+                  marginBottom: '14px'
+                }}>
+                  ℹ️ <strong>Device "{newDeviceName.trim()}" is already provisioned:</strong> Submitting will update its {selectedProtocol.replace('_', ' ')} driver connection settings and navigate to its live studio.
                 </div>
               )}
 
@@ -2875,7 +2914,11 @@ export default function App() {
                 </button>
                 <button type="submit" className="btn btn-primary" disabled={createLoading}>
                   {createLoading ? <RefreshCw className="animate-spin" size={16} /> : <Check size={16} />}
-                  <span>{selectedProtocol === 'MQTT_HTTP' ? 'Provision Device' : `Connect ${selectedProtocol.replace('_', ' ')} Device`}</span>
+                  <span>
+                    {newDeviceName.trim() && devices.some(d => d.name.toLowerCase() === newDeviceName.trim().toLowerCase())
+                      ? `Connect & Open ${selectedProtocol.replace('_', ' ')} Device`
+                      : (selectedProtocol === 'MQTT_HTTP' ? 'Provision Device' : `Connect ${selectedProtocol.replace('_', ' ')} Device`)}
+                  </span>
                 </button>
               </div>
             </form>

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -219,6 +220,9 @@ func (p *PostgresDeviceStore) CreateDevice(ctx context.Context, d *model.Device,
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		`, d.ID, d.CreatedTime, d.TenantID, d.DeviceProfileID, d.Name, d.Label, d.IsGateway, d.Tags, d.Version)
 		if err != nil {
+			if strings.Contains(err.Error(), "device_tenant_id_name_key") || strings.Contains(err.Error(), "23505") {
+				return errs.Conflict(fmt.Sprintf("A device named '%s' already exists for this tenant. Please use a unique device name or update the existing device.", d.Name))
+			}
 			return fmt.Errorf("failed to insert device: %w", err)
 		}
 
@@ -228,7 +232,10 @@ func (p *PostgresDeviceStore) CreateDevice(ctx context.Context, d *model.Device,
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
 			`, creds.ID, creds.CreatedTime, creds.TenantID, creds.DeviceID, creds.CredentialsType, creds.LookupID, []byte(creds.CredentialsValue))
 			if err != nil {
-				return err
+				if strings.Contains(err.Error(), "device_credentials_lookup_id_key") || strings.Contains(err.Error(), "23505") {
+					return errs.Conflict("The specified access token is already in use by another device.")
+				}
+				return fmt.Errorf("failed to insert device credentials: %w", err)
 			}
 		}
 		return nil
